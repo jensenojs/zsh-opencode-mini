@@ -259,23 +259,61 @@ zom-last() {
 add-zsh-hook preexec __zom_preexec
 add-zsh-hook precmd __zom_precmd
 
-if [[ -n "$ZOM_KEYBIND" ]] && (( $+widgets )); then
+if [[ -n "$ZOM_KEYBIND" ]]; then
   # Conflict-aware binding. Never steal a key the user already uses: warn and
   # skip instead (the `zom` function stays available; rebind via shell.keybind).
   # `$seq-prefix` (zsh's own unbound prefix) is safe to take over.
   # Always return 0 — a warning must not break a user's err_return zshrc.
+  #
+  # Loaded while main still points at viins (macOS factory default), the bind
+  # lands in viins and is "lost" the moment the user's zshrc runs `bindkey -e`.
+  # The source-time bind below is therefore best-effort; __zom_ensure_bind
+  # verifies against the live keymap at each prompt and rebinds until the bind
+  # sticks in its final keymap. ZOM_BIND_DONE: 0=trying 2=user-occupied.
+  if (( ! $+ZOM_BIND_DONE )); then typeset -g ZOM_BIND_DONE=0; fi
   __zom_bind() {
     local seq="$1" current
     current=$(bindkey "$seq" 2>/dev/null)
     current=${current##*\" }
     [[ "$current" == "$seq-prefix" || "$current" == "undefined-key" || -z "$current" ]] || {
-      [[ "$current" == "__zom_mini_widget" ]] && return 0   # re-source
-      print -u2 -- "zsh-opencode-mini: key '$seq' is already bound to '$current' — binding skipped."
-      print -u2 -- "zsh-opencode-mini: set \"keybind\" in $ZOM_CONFIG to another key or \"off\"."
+      if [[ "$current" == "__zom_mini_widget" ]]; then
+        return 0                                        # already ours
+      elif (( ! ZOM_BIND_DONE )); then                  # warn once, not per prompt
+        print -u2 -- "zsh-opencode-mini: key '$seq' is already bound to '$current' — binding skipped."
+        print -u2 -- "zsh-opencode-mini: set \"keybind\" in $ZOM_CONFIG to another key or \"off\"."
+        ZOM_BIND_DONE=2
+      fi
       return 0
     }
     zle -N __zom_mini_widget
-    bindkey "$seq" __zom_mini_widget
+    if bindkey "$seq" __zom_mini_widget; then :; fi
+    return 0
   }
-  __zom_bind "$ZOM_KEYBIND"
+  if (( $+widgets )); then
+    __zom_bind "$ZOM_KEYBIND"
+  fi
+
+  # Lazy bind: first prompt = post-zshrc, deferred plugins done, final keymap.
+  # Self-detaches once the bind reads back as ours (or as user-occupied), so
+  # the steady-state prompt pays zero extra work (this check forks once —
+  # acceptable for a bounded number of prompts, not forever).
+  __zom_ensure_bind() {
+    local current
+    if (( ZOM_BIND_DONE == 2 )); then
+      add-zsh-hook -d precmd __zom_ensure_bind
+      return 0
+    fi
+    current=$(bindkey "$ZOM_KEYBIND" 2>/dev/null)
+    if [[ "$current" == *'__zom_mini_widget'* ]]; then
+      add-zsh-hook -d precmd __zom_ensure_bind
+      return 0
+    fi
+    __zom_bind "$ZOM_KEYBIND"
+    current=$(bindkey "$ZOM_KEYBIND" 2>/dev/null)
+    if [[ "$current" == *'__zom_mini_widget'* ]]; then
+      add-zsh-hook -d precmd __zom_ensure_bind
+    fi
+    return 0
+  }
+  add-zsh-hook precmd __zom_ensure_bind
 fi
