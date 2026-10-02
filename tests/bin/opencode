@@ -1,0 +1,29 @@
+#!/usr/bin/env zsh
+# Mock `opencode` binary for zsh-opencode-mini integration tests.
+# Put tests/bin first on PATH so the plugin's `opencode` calls land here.
+#
+# Behavior:
+#   - every invocation appends argv + PWD to $ZOM_MOCK_LOG (absolute path)
+#   - mini: prints fake TUI lines, consumes stdin (the "user session"),
+#     echoes each consumed line, exits 0
+#   - run:  prints a fake answer; the prompt is visible via the argv log
+#   - anything else: exits 0 silently
+
+emulate -L zsh
+
+print -r -- "argv=$*" >> "$ZOM_MOCK_LOG"
+print -r -- "cwd=$PWD agent_env=${ZOM_AGENT:-<unset>}" >> "$ZOM_MOCK_LOG"
+
+case "$1" in
+  mini)
+    print -r -- "[mock mini TUI]"
+    while read -r line; do
+      print -r -- "mock-echo: $line"
+    done
+    print -r -- "[mock mini exit]"
+    ;;
+  run)
+    print -r -- "[mock run answer]"
+    ;;
+esac
+exit 0

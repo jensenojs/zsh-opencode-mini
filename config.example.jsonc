@@ -1,0 +1,58 @@
+{
+  // zsh-opencode-mini configuration.
+  // One file, two consumers:
+  //   - "shell" section: read by zsh-opencode-mini.plugin.zsh (via jq)
+  //   - "companion" section: read by opencode-plugin/zom-companion.js
+  // Parsing convention: WHOLE-LINE comments only (stripped by both sides).
+  // Do not put "//" inside string values.
+  // Copy to ~/.config/zsh-opencode-mini/config.jsonc to activate.
+  // Every key is optional; the values shown are the defaults.
+  "shell": {
+    // Absolute path of the command-history store.
+    // Omit for ~/.local/share/zsh-opencode-mini (XDG_DATA_HOME respected).
+    "dataDir": null,
+    // Key to summon opencode mini ("^X" by default; "off" disables the
+    // binding — an empty string is reserved and means default).
+    "keybind": "^X"
+  },
+  "companion": {
+    // How long (seconds) a failed command stays "fresh" for context injection.
+    "failureTtlSeconds": 600,
+    // Lines returned by the zom_context tool with query=recent.
+    "recentDefaultN": 20
+  },
+  "recipes": {
+    // Declarative model calls fired from shell events, evaluated by the
+    // opencode side. Each recipe is a named object; the name becomes the
+    // tool name (on:"manual") and the [zom:<name>] provenance tag, so it
+    // must match ^[a-zA-Z0-9_-]+$.
+    //
+    // Per-recipe fields:
+    //   on          "failure" (a failed shell command was recorded)
+    //               | "bg-done" (a background session spawned via zom-bg
+    //               finished; {sid} and {cwd} are filled)
+    //               | "manual"  (the agent gets a zom_recipe_<name> tool)
+    //   model       "provider/model-id" — the model that runs the prompt
+    //   prompt      template; {cmd} {exit} {cwd} are filled from the event
+    //   deliver     "next-session" (injected into the next mini session,
+    //               tagged [zom:<name>], expires after ttlSeconds)
+    //               | "outbox" (one line in outbox.jsonl, shown by the shell
+    //               before the next prompt as `zom: <text>`)
+    //   exitFilter  optional array of exit codes to fire on (omit = all)
+    //   ratePerHour optional cap of model calls per hour (omit = unlimited)
+    //   ttlSeconds  lifetime of next-session injections (default 900)
+    //
+    // "failure-hint" below is a working example: on a failed command, a
+    // model looks at the failing command and hands the user one concrete
+    // hint before their next prompt — at most 6 per hour, only for
+    // command-not-found (127) and git failures (128).
+    "failure-hint": {
+      "on": "failure",
+      "model": "anthropic/claude-haiku-4.5",
+      "prompt": "The shell command {cmd} failed with exit code {exit} in {cwd}. In one short sentence, name the most likely cause or the single most useful fix. Plain text only.",
+      "deliver": "outbox",
+      "exitFilter": [127, 128],
+      "ratePerHour": 6
+    }
+  }
+}
