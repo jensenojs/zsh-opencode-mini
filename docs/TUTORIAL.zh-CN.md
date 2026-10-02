@@ -146,9 +146,9 @@ zom_recipe_<name> 工具(agent 调用)───┘         │
 
 改 `zsh-opencode-mini.plugin.zsh` 之前，三条从已有结构里长出来的约束：
 
-1. **err_return 安全**。这个文件会被 source 进任何 zshrc，包括开着 `err_return` 的。插件路径上所有早退必须显式 `return 0`（keybind 冲突警告分支 `zsh-opencode-mini.plugin.zsh:276` 是范本：警告后仍 return 0，一条警告不能杀用户的 shell）。测试 S12 守护这条。同理，测试套件自己的计数器用 `PASS=$(( PASS + 1 ))` 而非 `((PASS++))`——后缀形式首次求值为 0 会触发 err_return（`tests/run.zsh:61-62` 的注释）。
+1. **err_return 安全**。这个文件会被 source 进任何 zshrc，包括开着 `err_return` 的。插件路径上所有早退必须显式 `return 0`（keybind 冲突警告分支是范本：警告后仍 return 0，一条警告不能杀用户的 shell）。测试 S12 守护这条。同理，测试套件自己的计数器用 `PASS=$(( PASS + 1 ))` 而非 `((PASS++))`——后缀形式首次求值为 0 会触发 err_return（`tests/run.zsh:61-62` 的注释）。
 2. **fork 纪律**。precmd 每条命令跑一次，新增逻辑先问「这加几个外部进程」。现在全路径只有 base64 一个 fork；`zstat`/`sysseek`/`sysread`/`strftime` 都是 builtin。能靠参数展开解决的不要起进程（OSC 帧剥 base64 换行就是这么做的，`zsh-opencode-mini.plugin.zsh:137`）。
-3. **不碰 widget、不碰 prompt**。唯一合法的 ZLE 操作是唤起 mini 时 `zle -I` 暂停行编辑器（`zsh-opencode-mini.plugin.zsh:235`）。keybind 绑定必须走冲突探测（`zsh-opencode-mini.plugin.zsh:267-281`）：用户已占用的键警告并跳过，绝不抢。
+3. **不碰 widget、不碰 prompt**。唯一合法的 ZLE 操作是唤起 mini 时 `zle -I` 暂停行编辑器（`zsh-opencode-mini.plugin.zsh:235`）。keybind 绑定走冲突探测 + prompt 自愈（`zsh-opencode-mini.plugin.zsh:262-331`）：用户已占用的键警告一次并放弃，绝不抢；绑定落在过期 keymap（加载时 main 还指 viins，用户的 zshrc 事后 `bindkey -e` 切走）的情况由首个 prompt 复验并重绑，落稳或放弃后自摘钩子。
 
 ## 测试怎么读
 
