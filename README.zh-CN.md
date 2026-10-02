@@ -240,10 +240,11 @@ rm -rf ~/.local/share/zsh-opencode-mini ~/.config/zsh-opencode-mini
 plugin API 形状写在文件头注释里（最近一次：2026-10-02，官方
 `Plugin.define` / `ctx.*` 形状）。
 
-**键位冲突**：source 时插件检查目标键当前绑定。该键已被你占用时，保留你
-的绑定、stderr 打警告（`zom` 函数仍可用）——想换键改 config 里的
-`shell.keybind`，或 `"off"` 跳过。zsh 自带的、未被使用的 `^X-prefix` 默认
-前缀视为可安全接管。
+**键位冲突**：插件在 source 时尽力绑定，之后每个 prompt 复验直到绑定
+落稳——这样 zshrc 在插件加载后才切换 keymap（`bindkey -e`/`-v`）也不会
+静默丢键。目标键已被你占用时，保留你的绑定、stderr 打一次警告（`zom`
+函数仍可用）——想换键改 config 里的 `shell.keybind`，或 `"off"` 跳过。
+zsh 自带的、未被使用的 `^X-prefix` 默认前缀视为可安全接管。
 
 ## 用法
 

@@ -264,9 +264,11 @@ load loudly on mismatch — the plugin API it was verified against is
 documented in the file header (last: 2026-10-02, official `Plugin.define` /
 `ctx.*` shape).
 
-**Keybind conflicts**: at source time the plugin checks what its key is
-already bound to. If you own that key, the existing binding is kept and a
-warning is printed (the `zom` function still works) — rebind via
+**Keybind conflicts**: the plugin binds at source time as best effort, then
+re-verifies on each prompt until the bind sticks — so a zshrc that switches
+keymap after plugins load (`bindkey -e` / `-v`) doesn't silently lose the
+key. If the key is owned by you, the existing binding is kept and a warning
+is printed once (the `zom` function still works) — rebind via
 `shell.keybind` in the config, or `"off"` to skip entirely. zsh's own unused
 `^X-prefix` default is safe to take over.
 
