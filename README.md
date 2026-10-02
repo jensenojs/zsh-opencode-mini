@@ -108,6 +108,9 @@ Two sections, each read by the runtime that owns that concern:
 |---|---|---|---|
 | `shell` | `dataDir` | `~/.local/share/zsh-opencode-mini` | data directory (XDG_DATA_HOME respected) |
 | `shell` | `keybind` | `^X` | summon key; `"off"` disables the binding |
+| `shell` | `resume` | `"main"` | which session C-x reopens: `"main"` = the dedicated `ses_zom-main` (isolated from your other opencode sessions); `"off"` = fresh every time |
+| `shell` | `replay` | `"on"` | what mini redraws when the main session reopens: `"on"` = newest `replayLimit` messages; `"off"` = `--no-replay`, straight to the input line (full history stays in the session) |
+| `shell` | `replayLimit` | `50` | newest-N cap for replay (upstream default 200 — the screen flooding) |
 | `companion` | `failureTtlSeconds` | `600` | failure freshness window (s) |
 | `companion` | `recentDefaultN` | `20` | lines for `zom_context` `query=recent` |
 | `recipes` | *(named objects)* | *(none)* | declarative model calls; see [Recipes](#recipes) |
@@ -274,8 +277,12 @@ is printed once (the `zom` function still works) — rebind via
 
 ## Usage
 
-- `C-x` — summon `opencode mini` (fullscreen TUI inside a paused ZLE), `-c`
-  resumes the last session
+- `C-x` — summon `opencode mini` (fullscreen TUI inside a paused ZLE). With
+  the default `resume: "main"` this reopens one dedicated assistant session
+  (`ses_zom-main`), isolated from your other opencode sessions; `resume: "off"`
+  starts a fresh one. On reopen mini replays only the newest `replayLimit`
+  messages (default 50, upstream default 200) — or none at all with
+  `replay: "off"` (`--no-replay`); the session itself keeps its full history
 - `zom` — scriptable launcher, forwards extra args to mini
 - `zom-last` — hand the last failed command to `opencode run`, no TUI
 - `zom-bg <prompt>` — spawn a long-running `opencode run` in the background;

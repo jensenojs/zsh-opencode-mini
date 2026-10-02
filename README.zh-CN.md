@@ -97,6 +97,9 @@ prompt 模板、调用配置的模型、送达结果：
 |---|---|---|---|
 | `shell` | `dataDir` | `~/.local/share/zsh-opencode-mini` | 数据目录（尊重 XDG_DATA_HOME） |
 | `shell` | `keybind` | `^X` | 唤起键；`"off"` 显式禁用绑定 |
+| `shell` | `resume` | `"main"` | C-x 接哪个会话：`"main"`=专属会话 `ses_zom-main`（与你的其它 opencode 会话隔离）；`"off"`=每次全新会话 |
+| `shell` | `replay` | `"on"` | 重开主会话时 mini 重画多少：`"on"`=最近 `replayLimit` 条；`"off"`=传 `--no-replay`，直接落在输入行（会话全历史仍在） |
+| `shell` | `replayLimit` | `50` | replay 的最新 N 条上限（上游默认 200，铺屏就是它） |
 | `companion` | `failureTtlSeconds` | `600` | 失败信号新鲜窗口（秒） |
 | `companion` | `recentDefaultN` | `20` | `zom_context` 查 recent 的默认条数 |
 | `recipes` | *（具名对象）* | *（无）* | 声明式模型调用；见 [Recipes](#recipes) |
@@ -248,7 +251,11 @@ zsh 自带的、未被使用的 `^X-prefix` 默认前缀视为可安全接管。
 
 ## 用法
 
-- `C-x` — 唤起 `opencode mini`（暂停 ZLE 里的全屏 TUI），`-c` 续上一 session
+- `C-x` — 唤起 `opencode mini`（暂停 ZLE 里的全屏 TUI）。默认 `resume:"main"`
+  接的是专属助手会话 `ses_zom-main`（与你的其它 opencode 会话隔离）；
+  `resume:"off"` 每次全新会话。重开时只回放最近 `replayLimit` 条消息
+  （默认 50，上游默认 200）；`replay:"off"` 则传 `--no-replay` 完全不回放，
+  直接落在输入行——会话全历史仍在
 - `zom` — 脚本化入口，额外参数转发给 mini
 - `zom-last` — 把最近失败命令直接丢给 `opencode run`，不开 TUI
 - `zom-bg <prompt>` — 在后台跑一个长时的 `opencode run`；打印 session id
