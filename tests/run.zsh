@@ -165,7 +165,31 @@ t_S6_zom_launch() {
   run_zsh 'zom extra-arg' >/dev/null 2>&1
   local log
   log=$(cat "$ZOM_MOCK_LOG")
-  assert_contains "S6 mock invoked as mini" "$log" "argv=mini -c --agent zsh-companion extra-arg"
+  assert_contains "S6 default resume=main pins session" "$log" "argv=mini -s ses_zom-main --replay-limit 50 --agent zsh-companion extra-arg"
+  cleanup
+  sandbox
+  write_config <<'EOF'
+{ "shell": { "resume": "off" } }
+EOF
+  run_zsh 'zom extra-arg' >/dev/null 2>&1
+  log=$(cat "$ZOM_MOCK_LOG")
+  assert_contains "S6 resume=off starts fresh" "$log" "argv=mini --agent zsh-companion extra-arg"
+  cleanup
+  sandbox
+  write_config <<'EOF'
+{ "shell": { "resume": "main", "replay": "off" } }
+EOF
+  run_zsh 'zom extra-arg' >/dev/null 2>&1
+  log=$(cat "$ZOM_MOCK_LOG")
+  assert_contains "S6 replay=off passes --no-replay" "$log" "argv=mini -s ses_zom-main --no-replay --agent zsh-companion extra-arg"
+  cleanup
+  sandbox
+  write_config <<'EOF'
+{ "shell": { "resume": "main", "replayLimit": 7 } }
+EOF
+  run_zsh 'zom extra-arg' >/dev/null 2>&1
+  log=$(cat "$ZOM_MOCK_LOG")
+  assert_contains "S6 replayLimit honoured" "$log" "argv=mini -s ses_zom-main --replay-limit 7 --agent zsh-companion extra-arg"
   cleanup
 }
 

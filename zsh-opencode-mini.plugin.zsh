@@ -42,9 +42,45 @@ case "$ZOM_KEYBIND" in
   off)       ZOM_KEYBIND=""  ;;   # explicit disable
 esac
 
+# Which session C-x resumes. "main" (default): one dedicated assistant session
+# (ZOM_MAIN_SESSION), fully isolated from whatever opencode sessions you use
+# elsewhere — `-c` here would resume your *globally latest* session (often one
+# that is streaming right now), which is never what the keybind means. "off":
+# a fresh session every time. Anything else: warn once, fall back to "main".
+ZOM_RESUME=$(__zom_cfg '.shell.resume')
+case "$ZOM_RESUME" in
+  main | "" | null) ZOM_RESUME="main" ;;   # absent -> default
+  off)              : ;;
+  *)
+    print -u2 -- "zsh-opencode-mini: shell.resume '$ZOM_RESUME' invalid (main|off) — using main."
+    ZOM_RESUME="main" ;;
+esac
+
 # ---- Internal defaults (not configuration; edit the source if you must) ----
 typeset -gr ZOM_AGENT="zsh-companion"   # agent name, defined in agent/zsh-companion.md
-typeset -gr ZOM_MINI_FLAGS="-c"         # -c resumes the last opencode session
+typeset -gr ZOM_MAIN_SESSION="ses_zom-main"  # the dedicated assistant session ("resume": "main")
+# Replay behaviour when resuming the main session (v2.0.21 mini source:
+# opening prints the newest N messages into the terminal scrollback, N
+# defaulting to 200 — that reprint is the screen-flooding you see on C-x):
+#   shell.replay       "on" (default) | "off" — off passes --no-replay
+#   shell.replayLimit  positive integer (default 50)
+# The session itself keeps its full history; these only bound what mini
+# redraws on open.
+ZOM_REPLAY=$(__zom_cfg '.shell.replay')
+case "$ZOM_REPLAY" in
+  on | "" | null) ZOM_REPLAY="on" ;;   # absent -> default
+  off)            : ;;
+  *)
+    print -u2 -- "zsh-opencode-mini: shell.replay '$ZOM_REPLAY' invalid (on|off) — using on."
+    ZOM_REPLAY="on" ;;
+esac
+ZOM_REPLAY_LIMIT=$(__zom_cfg '.shell.replayLimit')
+if [[ "$ZOM_REPLAY_LIMIT" == "" || "$ZOM_REPLAY_LIMIT" == "null" ]]; then
+  ZOM_REPLAY_LIMIT="50"   # absent -> default
+elif [[ "$ZOM_REPLAY_LIMIT" != <-> || "$ZOM_REPLAY_LIMIT" -lt 1 ]]; then
+  print -u2 -- "zsh-opencode-mini: shell.replayLimit '$ZOM_REPLAY_LIMIT' invalid (positive integer) — using 50."
+  ZOM_REPLAY_LIMIT="50"
+fi
 typeset -gr ZOM_OSC_CODE="7777"         # private OSC code; may change when the fork lands
 
 # zsh/datetime provides EPOCHREALTIME / EPOCHSECONDS / strftime as builtins;
@@ -226,7 +262,14 @@ zom-bg() {
 # The single launch path, shared by the keybind widget and the `zom` function.
 # Kept free of ZLE calls so tests can exercise it without a line editor.
 __zom_launch_mini() {
-  opencode mini ${=ZOM_MINI_FLAGS} --agent "$ZOM_AGENT" "$@"
+  case "$ZOM_RESUME" in
+    main)
+      case "$ZOM_REPLAY" in
+        on)  opencode mini -s "$ZOM_MAIN_SESSION" --replay-limit "$ZOM_REPLAY_LIMIT" --agent "$ZOM_AGENT" "$@" ;;
+        off) opencode mini -s "$ZOM_MAIN_SESSION" --no-replay --agent "$ZOM_AGENT" "$@" ;;
+      esac ;;
+    off) opencode mini --agent "$ZOM_AGENT" "$@" ;;
+  esac
 }
 
 # ZLE widget: pause the line editor (zle -I), run the fullscreen TUI,

@@ -13,7 +13,20 @@
     "dataDir": null,
     // Key to summon opencode mini ("^X" by default; "off" disables the
     // binding — an empty string is reserved and means default).
-    "keybind": "^X"
+    "keybind": "^X",
+    // Which session C-x resumes:
+    //   "main" (default) — one dedicated assistant session (ses_zom-main),
+    //                      isolated from your other opencode sessions
+    //   "off"            — a fresh session every time
+    "resume": "main",
+    // What mini redraws when the main session opens (only affects
+    // resume:"main"). "on" (default) prints the newest replayLimit messages;
+    // "off" passes --no-replay and opens straight at the input line.
+    // The session itself keeps its full history.
+    "replay": "on",
+    // Newest-N message cap for replay ("replay":"on" only; default 50,
+    // upstream default is 200).
+    "replayLimit": 50
   },
   "companion": {
     // How long (seconds) a failed command stays "fresh" for context injection.
