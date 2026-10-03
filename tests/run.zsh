@@ -207,6 +207,35 @@ EOF
   log=$(cat "$ZOM_MOCK_LOG")
   assert_not_contains "S6 stale failure does not prefill" "$log" "--prefill"
   cleanup
+  sandbox
+  run_command 'git push --force' 'false'
+  write_config <<'EOF'
+{ "shell": { "failurePrefill": "cwd={cwd} exit={exit} cmd={cmd}" } }
+EOF
+  run_zsh 'zom extra-arg' >/dev/null 2>&1
+  log=$(cat "$ZOM_MOCK_LOG")
+  assert_contains "S6 custom failurePrefill template honoured" "$log" "cwd=$(pwd) exit=1 cmd=git push --force"
+  cleanup
+  sandbox
+  run_command 'git push --force' 'false'
+  write_config <<'EOF'
+{ "shell": { "failurePrefill": "off" } }
+EOF
+  run_zsh 'zom extra-arg' >/dev/null 2>&1
+  log=$(cat "$ZOM_MOCK_LOG")
+  assert_not_contains "S6 failurePrefill off disables prefill" "$log" "--prefill"
+  cleanup
+  sandbox
+  run_zsh 'zom extra-arg' >/dev/null 2>&1
+  log=$(cat "$ZOM_MOCK_LOG")
+  assert_contains "S6 passthrough file env exported by default" "$log" "passthrough=$DD/passthrough."
+  cleanup
+  sandbox
+  write_config <<<'{ "shell": { "passthrough": "off" } }'
+  run_zsh 'zom extra-arg' >/dev/null 2>&1
+  log=$(cat "$ZOM_MOCK_LOG")
+  assert_contains "S6 passthrough=off leaves env unset" "$log" "passthrough=<unset>"
+  cleanup
 }
 
 t_S7_zom_last() {

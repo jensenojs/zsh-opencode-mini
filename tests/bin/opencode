@@ -12,7 +12,7 @@
 emulate -L zsh
 
 print -r -- "argv=$*" >> "$ZOM_MOCK_LOG"
-print -r -- "cwd=$PWD agent_env=${ZOM_AGENT:-<unset>}" >> "$ZOM_MOCK_LOG"
+print -r -- "cwd=$PWD agent_env=${ZOM_AGENT:-<unset>} passthrough=${ZOM_PASSTHROUGH_FILE:-<unset>}" >> "$ZOM_MOCK_LOG"
 
 case "$1" in
   mini)

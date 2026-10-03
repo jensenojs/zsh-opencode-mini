@@ -101,6 +101,8 @@ prompt 模板、调用配置的模型、送达结果：
 | `shell` | `replay` | `"on"` | 重开主会话时 mini 重画多少：`"on"`=最近 `replayLimit` 条；`"off"`=传 `--no-replay`，直接落在输入行（会话全历史仍在） |
 | `shell` | `replayLimit` | `50` | replay 的最新 N 条上限（上游默认 200，铺屏就是它） |
 | `shell` | `binary` | `"opencode"` | mini 启动用的 opencode 二进制。可钉绝对路径换指定构建——比如自建版，resume 已存在会话时保持 inline 不清屏（官方 v2.0.22 二进制 resume 时会从屏幕顶重画） |
+| `shell` | `passthrough` | `"on"` | mini 里无人认领的键不再被吞：`"on"`=mini 退出并把按键交还 shell 生效（默认 ctrl+z 挂起回 shell，键位走 `cli.json` 的 `app.suspend` 可改）；`"off"`=维持上游吞键行为 |
+| `shell` | `failurePrefill` | 内置模板 | 命令失败后（`failureTtlSeconds` 内）预填输入框（不自动发送）。占位符 `{cmd}` `{exit}` `{cwd}`；`"off"` 关闭 |
 | `shell` | *（fork 版专属）* | | 配自建二进制（`zom-inline-resume` 分支）：resume 跟随唤起目录（工具在你所在目录跑）；新鲜失败会经上游 `--prefill` 预填输入框——文本不自动发送，你确认后再回车 |
 | `companion` | `failureTtlSeconds` | `600` | 失败信号新鲜窗口（秒） |
 | `companion` | `recentDefaultN` | `20` | `zom_context` 查 recent 的默认条数 |

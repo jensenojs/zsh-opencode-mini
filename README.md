@@ -112,6 +112,8 @@ Two sections, each read by the runtime that owns that concern:
 | `shell` | `replay` | `"on"` | what mini redraws when the main session reopens: `"on"` = newest `replayLimit` messages; `"off"` = `--no-replay`, straight to the input line (full history stays in the session) |
 | `shell` | `replayLimit` | `50` | newest-N cap for replay (upstream default 200 — the screen flooding) |
 | `shell` | `binary` | `"opencode"` | which opencode binary mini launches. Pin an absolute path to use a specific build — e.g. a self-built one whose renderer keeps inline scrollback on resume (the official v2.0.22 binary redraws from the top when resuming an existing session) |
+| `shell` | `passthrough` | `"on"` | keys mini has no action for are no longer swallowed: `"on"` = mini exits and the widget replays the key into the shell (ctrl+z suspends back by default, configurable as the `app.suspend` keybind in `cli.json`); `"off"` = swallow like upstream |
+| `shell` | `failurePrefill` | built-in template | prompt pre-filled (not sent) in the composer after a failed command, within `failureTtlSeconds`. Placeholders `{cmd}` `{exit}` `{cwd}`; `"off"` disables |
 | `shell` | *(fork)* | | With the self-built binary (`zom-inline-resume` branch): resume follows the directory mini was launched from (tools run where you are), and a fresh failure prefills the composer via upstream `--prefill` — text lands unsent, you review and hit enter |
 | `companion` | `failureTtlSeconds` | `600` | failure freshness window (s) |
 | `companion` | `recentDefaultN` | `20` | lines for `zom_context` `query=recent` |

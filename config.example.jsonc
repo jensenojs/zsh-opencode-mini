@@ -31,7 +31,16 @@
     // absolute path to use a specific build — e.g. a self-built one whose
     // renderer keeps inline scrollback on resume (official v2.0.22 binary
     // redraws from the top when resuming an existing session).
-    "binary": null
+    "binary": null,
+    // Keys nobody claims inside mini (not a keymap action, not composer
+    // input): "on" (default) has mini hand the key back — it exits and the
+    // widget replays the raw bytes into ZLE, so the key takes effect at the
+    // shell prompt; "off" restores swallowing the key.
+    "passthrough": "on",
+    // Prompt pre-filled (not sent) in the composer after a failed command,
+    // within failureTtlSeconds. Placeholders: {cmd} {exit} {cwd}.
+    // Omit for the built-in Chinese template; "off" disables the prefill.
+    "failurePrefill": null
   },
   "companion": {
     // How long (seconds) a failed command stays "fresh" for context injection.

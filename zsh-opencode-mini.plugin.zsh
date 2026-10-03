@@ -103,6 +103,31 @@ if [[ "$ZOM_FAILURE_TTL" != <-> || "$ZOM_FAILURE_TTL" -lt 1 ]]; then
   ZOM_FAILURE_TTL="600"
 fi
 
+# Key passthrough (default on). When mini sees a key nobody claims (not a
+# keymap action, not composer input), it no longer swallows it: mini writes
+# the raw bytes to ZOM_PASSTHROUGH_FILE and exits; the widget replays them
+# into ZLE, so the key takes effect in the shell. "off" restores the old
+# swallow behaviour.
+ZOM_PASSTHROUGH=$(__zom_cfg '.shell.passthrough // empty')
+case "$ZOM_PASSTHROUGH" in
+  ""|on) ZOM_PASSTHROUGH="on" ;;
+  off) ZOM_PASSTHROUGH="off" ;;
+  *)
+    print -u2 -- "zsh-opencode-mini: shell.passthrough '$ZOM_PASSTHROUGH' invalid (on|off) — using on."
+    ZOM_PASSTHROUGH="on"
+  ;;
+esac
+ZOM_PASSTHROUGH_FILE="$ZOM_DATA_DIR/passthrough.$$"
+
+# Failure→prefill template. Mechanism (TTL check, placeholder substitution)
+# lives here; the wording is policy and lives in the config.
+# Placeholders: {cmd} {exit} {cwd}. "off" disables the prefill entirely.
+ZOM_FAILURE_PREFILL_TMPL=$(__zom_cfg '.shell.failurePrefill // empty')
+case "$ZOM_FAILURE_PREFILL_TMPL" in
+  "") ZOM_FAILURE_PREFILL_TMPL="上一条命令失败了（exit {exit}）：{cmd}\n帮我分析失败原因并给出修复建议" ;;
+  off) ZOM_FAILURE_PREFILL_TMPL="" ;;
+esac
+
 # zsh/datetime provides EPOCHREALTIME / EPOCHSECONDS / strftime as builtins;
 # zsh/stat (zstat) and zsh/system (sysread/sysseek) power the fork-free outbox
 # cursor read below. Recording stays at one external process per command (the
@@ -283,6 +308,7 @@ zom-bg() {
 # text lands in the input box unsent; the user reviews and hits enter).
 # Returns non-zero when no failure signal is fresh.
 __zom_failure_prefill() {
+  [[ -n "$ZOM_FAILURE_PREFILL_TMPL" ]] || return 1
   local f="$ZOM_DATA_DIR/last-failure.json"
   [[ -f "$f" ]] || return 1
   local info
@@ -293,7 +319,10 @@ __zom_failure_prefill() {
   cmd=${info[(w)3,-1]}
   [[ "$epoch" == <-> ]] || return 1
   (( EPOCHSECONDS - epoch <= ZOM_FAILURE_TTL )) || return 1
-  printf -- '上一条命令失败了（exit %s）：%s\n帮我分析失败原因并给出修复建议' "$exit_code" "$cmd"
+  local out=${ZOM_FAILURE_PREFILL_TMPL//\{cmd\}/$cmd}
+  out=${out//\{exit\}/$exit_code}
+  out=${out//\{cwd\}/$PWD}
+  printf -- '%s' "$out"
 }
 
 # The single launch path, shared by the keybind widget and the `zom` function.
@@ -301,6 +330,10 @@ __zom_failure_prefill() {
 __zom_launch_mini() {
   local prefill
   prefill=$(__zom_failure_prefill) && set -- --prefill "$prefill" "$@"
+  if [[ "$ZOM_PASSTHROUGH" == on ]]; then
+    rm -f "$ZOM_PASSTHROUGH_FILE"
+    local -x ZOM_PASSTHROUGH_FILE="$ZOM_PASSTHROUGH_FILE"
+  fi
   case "$ZOM_RESUME" in
     main)
       case "$ZOM_REPLAY" in
@@ -320,6 +353,15 @@ __zom_mini_widget() {
   # Emit a newline so mini starts on a fresh line (same as a direct command).
   print -- ""
   __zom_launch_mini
+  # Passthrough replay: mini exited on a key it does not handle and left the
+  # raw bytes in the passthrough file. Push them into ZLE so the key takes
+  # effect at the shell prompt instead of being lost.
+  if [[ "$ZOM_PASSTHROUGH" == on && -s "$ZOM_PASSTHROUGH_FILE" ]]; then
+    local keys
+    keys=$(<"$ZOM_PASSTHROUGH_FILE")
+    rm -f "$ZOM_PASSTHROUGH_FILE"
+    zle -U -- "$keys"
+  fi
   zle reset-prompt
 }
 
