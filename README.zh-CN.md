@@ -61,7 +61,7 @@ use = ["zsh-opencode-mini.plugin.zsh"]
 | `shell.keybind` | `"^X"` | 唤起键；`"off"` 关闭 |
 | `shell.resume` | `"main"` | `"main"`=专属会话；`"off"`=每次全新 |
 | `shell.replay` / `replayLimit` | `"on"` / `50` | 重开时回放的消息量（`"off"`=不回放） |
-| `shell.binary` | `"opencode"` | 钉指定的 opencode 构建 |
+| `shell.binary` | `"opencode-zom"` | mini 启动用的二进制；默认是 `scripts/install-zom-binary.sh` 装的 zom fork（官方构建没有 inline resume/挂起/透传，缺了会报错而不会静默回落） |
 | `shell.passthrough` | `"on"` | 未绑定键交还 shell，而不是吞掉 |
 | `shell.failurePrefill` | 内置模板 | 失败后预填的模板（`{cmd}` `{exit}` `{cwd}`；`"off"` 关闭） |
 | `companion.failureTtlSeconds` | `600` | 失败信号对 AI 保持「新鲜」的秒数 |

@@ -66,7 +66,7 @@ Optional. Copy [`config.example.jsonc`](config.example.jsonc) to
 | `shell.keybind` | `"^X"` | summon key; `"off"` disables |
 | `shell.resume` | `"main"` | `"main"` = one dedicated session; `"off"` = fresh each time |
 | `shell.replay` / `replayLimit` | `"on"` / `50` | messages redrawn on reopen (`"off"` = none) |
-| `shell.binary` | `"opencode"` | pin a specific opencode build |
+| `shell.binary` | `"opencode-zom"` | mini launcher binary; default is the zom fork installed by `scripts/install-zom-binary.sh` (official builds lack inline resume / suspend / passthrough and are not fallen back to silently) |
 | `shell.passthrough` | `"on"` | unbound keys go back to the shell instead of being swallowed |
 | `shell.failurePrefill` | built-in | template pre-filled after a failure (`{cmd}` `{exit}` `{cwd}`; `"off"` disables) |
 | `companion.failureTtlSeconds` | `600` | how long a failure stays "fresh" for the AI |

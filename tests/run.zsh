@@ -22,7 +22,7 @@
 #         (regression: empty EPOCHREALTIME once disabled recording entirely)
 #     S5  OSC frame: stdout carries ESC]7777;zom;v1;<base64> and the decoded
 #         payload round-trips to the same JSON
-#   Launcher (mock opencode in tests/bin):
+#   Launcher (mock opencode-zom in tests/bin):
 #     S6  zom: mock receives `mini -c --agent zsh-companion`
 #     S7  zom-last: prompt contains the recorded failing command
 #   Configuration (config.jsonc, the single config file):

@@ -60,10 +60,19 @@ esac
 # Pin an absolute path to use a specific build — e.g. a self-built one whose
 # renderer keeps the inline scrollback when resuming an existing session
 # (official v2.0.22 binary redraws from the top on `-s <existing>`).
+# Absent -> the zom binary (scripts/install-zom-binary.sh installs it as
+# "opencode-zom"). No silent fallback to the official binary: it lacks the
+# fork fixes (inline resume, suspend, key passthrough) and would quietly
+# degrade the experience; missing binary is a loud error at launch instead.
 ZOM_BINARY=$(__zom_cfg '.shell.binary')
 ZOM_BINARY=${ZOM_BINARY/#\~/$HOME}   # expand leading ~ (quoted "$ZOM_BINARY" would not)
 if [[ "$ZOM_BINARY" == "" || "$ZOM_BINARY" == "null" ]]; then
-  ZOM_BINARY="opencode"   # absent -> default
+  ZOM_BINARY="opencode-zom"
+fi
+if ! command -v "$ZOM_BINARY" >/dev/null 2>&1; then
+  print -u2 -- "zsh-opencode-mini: mini launcher binary not found: $ZOM_BINARY"
+  print -u2 -- "  install it:  scripts/install-zom-binary.sh   (or pin shell.binary)"
+  ZOM_BINARY=""
 fi
 typeset -gr ZOM_BINARY
 
@@ -291,7 +300,7 @@ zom-bg() {
     return 1
   fi
   local sid="ses_zom-bg-${EPOCHSECONDS}-$$"
-  opencode run -s "$sid" "$@" >/dev/null 2>&1 &
+  "$ZOM_BINARY" run -s "$sid" "$@" >/dev/null 2>&1 &
   local pid=$!   # capture before anything else can spawn — $! is the run process
   print -r -- "{\"sid\":\"$sid\",\"pid\":$pid,\"cwd\":\"$(__zom_json_escape "$PWD")\",\"started\":$EPOCHSECONDS}" \
     >> "$ZOM_DATA_DIR/bg.jsonl" || {
@@ -380,7 +389,7 @@ zom-last() {
     return 1
   fi
   print -- "zom-last: $last_failed"
-  opencode run "Explain and fix this failed command (run in the current directory): $last_failed"
+  "$ZOM_BINARY" run "Explain and fix this failed command (run in the current directory): $last_failed"
 }
 
 # ---- install ----

@@ -27,10 +27,11 @@
     // Newest-N message cap for replay ("replay":"on" only; default 50,
     // upstream default is 200).
     "replayLimit": 50,
-    // opencode binary mini launches (default: "opencode" from PATH). Pin an
-    // absolute path to use a specific build — e.g. a self-built one whose
-    // renderer keeps inline scrollback on resume (official v2.0.22 binary
-    // redraws from the top when resuming an existing session).
+    // opencode binary mini launches. Default "opencode-zom": the zom fork
+    // installed by scripts/install-zom-binary.sh (inline scrollback on resume,
+    // ctrl+z suspend, key passthrough). Missing binary fails loudly at launch;
+    // there is no silent fallback to the official binary (it clears the screen
+    // on resume). Pin an absolute path to use a specific build.
     "binary": null,
     // Keys nobody claims inside mini (not a keymap action, not composer
     // input): "on" (default) has mini hand the key back — it exits and the
