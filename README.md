@@ -111,6 +111,7 @@ Two sections, each read by the runtime that owns that concern:
 | `shell` | `resume` | `"main"` | which session C-x reopens: `"main"` = the dedicated `ses_zom-main` (isolated from your other opencode sessions); `"off"` = fresh every time |
 | `shell` | `replay` | `"on"` | what mini redraws when the main session reopens: `"on"` = newest `replayLimit` messages; `"off"` = `--no-replay`, straight to the input line (full history stays in the session) |
 | `shell` | `replayLimit` | `50` | newest-N cap for replay (upstream default 200 — the screen flooding) |
+| `shell` | `binary` | `"opencode"` | which opencode binary mini launches. Pin an absolute path to use a specific build — e.g. a self-built one whose renderer keeps inline scrollback on resume (the official v2.0.22 binary redraws from the top when resuming an existing session) |
 | `companion` | `failureTtlSeconds` | `600` | failure freshness window (s) |
 | `companion` | `recentDefaultN` | `20` | lines for `zom_context` `query=recent` |
 | `recipes` | *(named objects)* | *(none)* | declarative model calls; see [Recipes](#recipes) |

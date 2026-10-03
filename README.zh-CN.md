@@ -100,6 +100,7 @@ prompt 模板、调用配置的模型、送达结果：
 | `shell` | `resume` | `"main"` | C-x 接哪个会话：`"main"`=专属会话 `ses_zom-main`（与你的其它 opencode 会话隔离）；`"off"`=每次全新会话 |
 | `shell` | `replay` | `"on"` | 重开主会话时 mini 重画多少：`"on"`=最近 `replayLimit` 条；`"off"`=传 `--no-replay`，直接落在输入行（会话全历史仍在） |
 | `shell` | `replayLimit` | `50` | replay 的最新 N 条上限（上游默认 200，铺屏就是它） |
+| `shell` | `binary` | `"opencode"` | mini 启动用的 opencode 二进制。可钉绝对路径换指定构建——比如自建版，resume 已存在会话时保持 inline 不清屏（官方 v2.0.22 二进制 resume 时会从屏幕顶重画） |
 | `companion` | `failureTtlSeconds` | `600` | 失败信号新鲜窗口（秒） |
 | `companion` | `recentDefaultN` | `20` | `zom_context` 查 recent 的默认条数 |
 | `recipes` | *（具名对象）* | *（无）* | 声明式模型调用；见 [Recipes](#recipes) |

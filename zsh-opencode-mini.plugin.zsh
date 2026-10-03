@@ -56,6 +56,16 @@ case "$ZOM_RESUME" in
     ZOM_RESUME="main" ;;
 esac
 
+# Which opencode binary mini launches. Defaults to "opencode" from PATH.
+# Pin an absolute path to use a specific build — e.g. a self-built one whose
+# renderer keeps the inline scrollback when resuming an existing session
+# (official v2.0.22 binary redraws from the top on `-s <existing>`).
+ZOM_BINARY=$(__zom_cfg '.shell.binary')
+if [[ "$ZOM_BINARY" == "" || "$ZOM_BINARY" == "null" ]]; then
+  ZOM_BINARY="opencode"   # absent -> default
+fi
+typeset -gr ZOM_BINARY
+
 # ---- Internal defaults (not configuration; edit the source if you must) ----
 typeset -gr ZOM_AGENT="zsh-companion"   # agent name, defined in agent/zsh-companion.md
 typeset -gr ZOM_MAIN_SESSION="ses_zom-main"  # the dedicated assistant session ("resume": "main")
@@ -265,10 +275,10 @@ __zom_launch_mini() {
   case "$ZOM_RESUME" in
     main)
       case "$ZOM_REPLAY" in
-        on)  opencode mini -s "$ZOM_MAIN_SESSION" --replay-limit "$ZOM_REPLAY_LIMIT" --agent "$ZOM_AGENT" "$@" ;;
-        off) opencode mini -s "$ZOM_MAIN_SESSION" --no-replay --agent "$ZOM_AGENT" "$@" ;;
+        on)  "$ZOM_BINARY" mini -s "$ZOM_MAIN_SESSION" --replay-limit "$ZOM_REPLAY_LIMIT" --agent "$ZOM_AGENT" "$@" ;;
+        off) "$ZOM_BINARY" mini -s "$ZOM_MAIN_SESSION" --no-replay --agent "$ZOM_AGENT" "$@" ;;
       esac ;;
-    off) opencode mini --agent "$ZOM_AGENT" "$@" ;;
+    off) "$ZOM_BINARY" mini --agent "$ZOM_AGENT" "$@" ;;
   esac
 }
 
