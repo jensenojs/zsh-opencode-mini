@@ -61,6 +61,7 @@ esac
 # renderer keeps the inline scrollback when resuming an existing session
 # (official v2.0.22 binary redraws from the top on `-s <existing>`).
 ZOM_BINARY=$(__zom_cfg '.shell.binary')
+ZOM_BINARY=${ZOM_BINARY/#\~/$HOME}   # expand leading ~ (quoted "$ZOM_BINARY" would not)
 if [[ "$ZOM_BINARY" == "" || "$ZOM_BINARY" == "null" ]]; then
   ZOM_BINARY="opencode"   # absent -> default
 fi
