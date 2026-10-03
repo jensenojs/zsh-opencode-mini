@@ -276,6 +276,10 @@ __zom_launch_mini() {
 # then repaint the prompt.
 __zom_mini_widget() {
   zle -I
+  # opentui inline renderer clears the screen when mini starts with the
+  # cursor past column 0; zle -I leaves the cursor at the prompt column.
+  # Emit a newline so mini starts on a fresh line (same as a direct command).
+  print -- ""
   __zom_launch_mini
   zle reset-prompt
 }
