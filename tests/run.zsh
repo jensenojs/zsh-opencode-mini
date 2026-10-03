@@ -64,6 +64,7 @@ ok()   { print -r -- "  PASS  $1"; PASS=$(( PASS + 1 )) }
 bad()  { print -r -- "  FAIL  $1: $2"; FAIL=$(( FAIL + 1 )) }
 assert_eq() { [[ "$2" == "$3" ]] && ok "$1" || bad "$1" "expected [$3], got [$2]" }
 assert_contains() { [[ "$2" == *"$3"* ]] && ok "$1" || bad "$1" "[$2] lacks [$3]" }
+assert_not_contains() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1" "[$2] unexpectedly contains [$3]" }
 assert_file_exists() { [[ -f "$1" ]] && ok "$2" || bad "$2" "missing file $1" }
 
 # fresh sandbox per scenario: HOME + XDG dirs inside a temp tree
@@ -190,6 +191,21 @@ EOF
   run_zsh 'zom extra-arg' >/dev/null 2>&1
   log=$(cat "$ZOM_MOCK_LOG")
   assert_contains "S6 replayLimit honoured" "$log" "argv=mini -s ses_zom-main --replay-limit 7 --agent zsh-companion extra-arg"
+  cleanup
+  sandbox
+  run_command 'git push --force' 'false'   # record a fresh failure
+  run_zsh 'zom extra-arg' >/dev/null 2>&1
+  log=$(cat "$ZOM_MOCK_LOG")
+  assert_contains "S6 fresh failure prefills composer" "$log" "--prefill"
+  assert_contains "S6 prefill carries the failed command" "$log" "git push --force"
+  cleanup
+  sandbox
+  run_command 'git push --force' 'false'
+  printf '{"ts":"2020-01-01T00:00:00+0000","epoch":1,"cwd":"/tmp","exit":1,"cmd":"git push --force"}\n' \
+    > "$DD/last-failure.json"   # stale beyond any TTL (epoch inside the payload)
+  run_zsh 'zom extra-arg' >/dev/null 2>&1
+  log=$(cat "$ZOM_MOCK_LOG")
+  assert_not_contains "S6 stale failure does not prefill" "$log" "--prefill"
   cleanup
 }
 

@@ -94,6 +94,15 @@ elif [[ "$ZOM_REPLAY_LIMIT" != <-> || "$ZOM_REPLAY_LIMIT" -lt 1 ]]; then
 fi
 typeset -gr ZOM_OSC_CODE="7777"         # private OSC code; may change when the fork lands
 
+# Failure→prefill TTL (seconds). Shared with the opencode-side companion
+# plugin, which guards the same last-failure.json signal with the same key.
+ZOM_FAILURE_TTL=$(__zom_cfg '.companion.failureTtlSeconds // 600')
+[[ "$ZOM_FAILURE_TTL" == "" || "$ZOM_FAILURE_TTL" == "null" ]] && ZOM_FAILURE_TTL="600"
+if [[ "$ZOM_FAILURE_TTL" != <-> || "$ZOM_FAILURE_TTL" -lt 1 ]]; then
+  print -u2 -- "zsh-opencode-mini: companion.failureTtlSeconds '$ZOM_FAILURE_TTL' invalid (positive integer) — using 600."
+  ZOM_FAILURE_TTL="600"
+fi
+
 # zsh/datetime provides EPOCHREALTIME / EPOCHSECONDS / strftime as builtins;
 # zsh/stat (zstat) and zsh/system (sysread/sysseek) power the fork-free outbox
 # cursor read below. Recording stays at one external process per command (the
@@ -270,9 +279,28 @@ zom-bg() {
 
 # ---- summon opencode mini ----
 
+# Fresh failure -> a prefilled prompt for the composer (fork --prefill: the
+# text lands in the input box unsent; the user reviews and hits enter).
+# Returns non-zero when no failure signal is fresh.
+__zom_failure_prefill() {
+  local f="$ZOM_DATA_DIR/last-failure.json"
+  [[ -f "$f" ]] || return 1
+  local info
+  info=$(jq -r '[.epoch // 0, .exit // "?", .cmd // ""] | @tsv' "$f" 2>/dev/null) || return 1
+  local epoch exit_code cmd
+  epoch=${info[(w)1]}
+  exit_code=${info[(w)2]}
+  cmd=${info[(w)3,-1]}
+  [[ "$epoch" == <-> ]] || return 1
+  (( EPOCHSECONDS - epoch <= ZOM_FAILURE_TTL )) || return 1
+  printf -- '上一条命令失败了（exit %s）：%s\n帮我分析失败原因并给出修复建议' "$exit_code" "$cmd"
+}
+
 # The single launch path, shared by the keybind widget and the `zom` function.
 # Kept free of ZLE calls so tests can exercise it without a line editor.
 __zom_launch_mini() {
+  local prefill
+  prefill=$(__zom_failure_prefill) && set -- --prefill "$prefill" "$@"
   case "$ZOM_RESUME" in
     main)
       case "$ZOM_REPLAY" in
