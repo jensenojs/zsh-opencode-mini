@@ -47,6 +47,7 @@ use = ["zsh-opencode-mini.plugin.zsh"]
 | `zom-last` | 把最近失败的命令交给 `opencode run` |
 | `zom-bg <prompt>` | 后台长任务；完成通知以 `zom:` 行送达 |
 | `zom: <text>` | 送达行（recipes / 后台通知），出现在下一个提示符前 |
+| `zom-config` | 打印全部配置项的生效值与来源（只读） |
 
 命令失败后，输入框会预填一条分析提示词（你确认后才发送）。AI 也能用
 `zom_context` 工具自己查历史——新鲜的才注入，没问的不加载。
@@ -59,13 +60,18 @@ use = ["zsh-opencode-mini.plugin.zsh"]
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `shell.keybind` | `"^X"` | 唤起键；`"off"` 关闭 |
+| `shell.dataDir` | `~/.local/share/zsh-opencode-mini` | 历史 / 失败信号 / outbox 存储（允许 `~`） |
 | `shell.resume` | `"main"` | `"main"`=专属会话；`"off"`=每次全新 |
 | `shell.replay` / `replayLimit` | `"on"` / `50` | 重开时回放的消息量（`"off"`=不回放） |
 | `shell.binary` | `"opencode-zom"` | mini 启动用的二进制；默认是 `scripts/install-zom-binary.sh` 装的 zom fork（官方构建没有 inline resume/挂起/透传，缺了会报错而不会静默回落） |
 | `shell.passthrough` | `"on"` | 未绑定键交还 shell，而不是吞掉 |
 | `shell.failurePrefill` | 内置模板 | 失败后预填的模板（`{cmd}` `{exit}` `{cwd}`；`"off"` 关闭） |
 | `companion.failureTtlSeconds` | `600` | 失败信号对 AI 保持「新鲜」的秒数 |
-| `recipes.<name>` | — | 事件驱动的声明式模型调用（`failure` / `bg-done` / `manual`），见示例配置 |
+| `companion.recentDefaultN` | `20` | `zom_context` 工具 `query=recent` 返回的行数 |
+| `recipes.<name>`（顶层） | — | 事件驱动的声明式模型调用（`failure` / `bg-done` / `manual`），名字须匹配 `^[A-Za-z0-9_-]+$`，见示例配置 |
+
+配置在插件加载时读一次，改完开新 shell 生效。`zom-config` 可查看全部生效值
+（含装在 `~/.config/opencode/` 下的部件状态）；插件绝不写任何配置文件。
 
 ## 工作原理
 

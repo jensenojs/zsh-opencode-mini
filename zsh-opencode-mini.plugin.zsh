@@ -33,12 +33,29 @@ __zom_cfg() {
 
 ZOM_DATA_DIR=$(__zom_cfg '.shell.dataDir')
 ZOM_DATA_DIR=${ZOM_DATA_DIR/#\~/$HOME}   # expand leading ~ if the user wrote one
+# ---- Single source of defaults --------------------------------------------
+# Every user-facing default lives in this one table. Readers below fall back
+# to ${ZOM_DEFAULTS[...]}, and `zom-config` reports from it; no other literal
+# default for these keys exists in this file.
+typeset -g ZOM_PREFILL_DEFAULT='上一条命令失败了（exit {exit}）：{cmd}\n帮我分析失败原因并给出修复建议'
+typeset -gA ZOM_DEFAULTS=(
+  [binary]="opencode-zom"
+  [keybind]="^X"
+  [resume]="main"
+  [replay]="on"
+  [replayLimit]="50"
+  [passthrough]="on"
+  [failurePrefill]="$ZOM_PREFILL_DEFAULT"
+  [failureTtlSeconds]="600"
+  [recentDefaultN]="20"
+)
+
 : "${ZOM_DATA_DIR:="${XDG_DATA_HOME:-$HOME/.local/share}/zsh-opencode-mini"}"
 
 ZOM_KEYBIND=$(__zom_cfg '.shell.keybind')
 # "" cannot round-trip through $( ), so "off" is the explicit disable token.
 case "$ZOM_KEYBIND" in
-  "" | null) ZOM_KEYBIND="^X" ;;   # absent from config -> default
+  "" | null) ZOM_KEYBIND="${ZOM_DEFAULTS[keybind]}" ;;   # absent from config -> default
   off)       ZOM_KEYBIND=""  ;;   # explicit disable
 esac
 
@@ -49,11 +66,11 @@ esac
 # a fresh session every time. Anything else: warn once, fall back to "main".
 ZOM_RESUME=$(__zom_cfg '.shell.resume')
 case "$ZOM_RESUME" in
-  main | "" | null) ZOM_RESUME="main" ;;   # absent -> default
+  main | "" | null) ZOM_RESUME="${ZOM_DEFAULTS[resume]}" ;;   # absent -> default
   off)              : ;;
   *)
-    print -u2 -- "zsh-opencode-mini: shell.resume '$ZOM_RESUME' invalid (main|off) — using main."
-    ZOM_RESUME="main" ;;
+    print -u2 -- "zsh-opencode-mini: shell.resume '$ZOM_RESUME' invalid (main|off) — using ${ZOM_DEFAULTS[resume]}."
+    ZOM_RESUME="${ZOM_DEFAULTS[resume]}" ;;
 esac
 
 # Which opencode binary mini launches. Defaults to "opencode" from PATH.
@@ -67,7 +84,7 @@ esac
 ZOM_BINARY=$(__zom_cfg '.shell.binary')
 ZOM_BINARY=${ZOM_BINARY/#\~/$HOME}   # expand leading ~ (quoted "$ZOM_BINARY" would not)
 if [[ "$ZOM_BINARY" == "" || "$ZOM_BINARY" == "null" ]]; then
-  ZOM_BINARY="opencode-zom"
+  ZOM_BINARY="${ZOM_DEFAULTS[binary]}"
 fi
 if ! command -v "$ZOM_BINARY" >/dev/null 2>&1; then
   print -u2 -- "zsh-opencode-mini: mini launcher binary not found: $ZOM_BINARY"
@@ -88,28 +105,28 @@ typeset -gr ZOM_MAIN_SESSION="ses_zom-main"  # the dedicated assistant session (
 # redraws on open.
 ZOM_REPLAY=$(__zom_cfg '.shell.replay')
 case "$ZOM_REPLAY" in
-  on | "" | null) ZOM_REPLAY="on" ;;   # absent -> default
+  on | "" | null) ZOM_REPLAY="${ZOM_DEFAULTS[replay]}" ;;   # absent -> default
   off)            : ;;
   *)
-    print -u2 -- "zsh-opencode-mini: shell.replay '$ZOM_REPLAY' invalid (on|off) — using on."
-    ZOM_REPLAY="on" ;;
+    print -u2 -- "zsh-opencode-mini: shell.replay '$ZOM_REPLAY' invalid (on|off) — using ${ZOM_DEFAULTS[replay]}."
+    ZOM_REPLAY="${ZOM_DEFAULTS[replay]}" ;;
 esac
 ZOM_REPLAY_LIMIT=$(__zom_cfg '.shell.replayLimit')
 if [[ "$ZOM_REPLAY_LIMIT" == "" || "$ZOM_REPLAY_LIMIT" == "null" ]]; then
-  ZOM_REPLAY_LIMIT="50"   # absent -> default
+  ZOM_REPLAY_LIMIT="${ZOM_DEFAULTS[replayLimit]}"   # absent -> default
 elif [[ "$ZOM_REPLAY_LIMIT" != <-> || "$ZOM_REPLAY_LIMIT" -lt 1 ]]; then
-  print -u2 -- "zsh-opencode-mini: shell.replayLimit '$ZOM_REPLAY_LIMIT' invalid (positive integer) — using 50."
-  ZOM_REPLAY_LIMIT="50"
+  print -u2 -- "zsh-opencode-mini: shell.replayLimit '$ZOM_REPLAY_LIMIT' invalid (positive integer) — using ${ZOM_DEFAULTS[replayLimit]}."
+  ZOM_REPLAY_LIMIT="${ZOM_DEFAULTS[replayLimit]}"
 fi
 typeset -gr ZOM_OSC_CODE="7777"         # private OSC code; may change when the fork lands
 
 # Failure→prefill TTL (seconds). Shared with the opencode-side companion
 # plugin, which guards the same last-failure.json signal with the same key.
-ZOM_FAILURE_TTL=$(__zom_cfg '.companion.failureTtlSeconds // 600')
-[[ "$ZOM_FAILURE_TTL" == "" || "$ZOM_FAILURE_TTL" == "null" ]] && ZOM_FAILURE_TTL="600"
+ZOM_FAILURE_TTL=$(__zom_cfg '.companion.failureTtlSeconds // empty')
+[[ "$ZOM_FAILURE_TTL" == "" || "$ZOM_FAILURE_TTL" == "null" ]] && ZOM_FAILURE_TTL="${ZOM_DEFAULTS[failureTtlSeconds]}"
 if [[ "$ZOM_FAILURE_TTL" != <-> || "$ZOM_FAILURE_TTL" -lt 1 ]]; then
-  print -u2 -- "zsh-opencode-mini: companion.failureTtlSeconds '$ZOM_FAILURE_TTL' invalid (positive integer) — using 600."
-  ZOM_FAILURE_TTL="600"
+  print -u2 -- "zsh-opencode-mini: companion.failureTtlSeconds '$ZOM_FAILURE_TTL' invalid (positive integer) — using ${ZOM_DEFAULTS[failureTtlSeconds]}."
+  ZOM_FAILURE_TTL="${ZOM_DEFAULTS[failureTtlSeconds]}"
 fi
 
 # Key passthrough (default on). When mini sees a key nobody claims (not a
@@ -119,11 +136,11 @@ fi
 # swallow behaviour.
 ZOM_PASSTHROUGH=$(__zom_cfg '.shell.passthrough // empty')
 case "$ZOM_PASSTHROUGH" in
-  ""|on) ZOM_PASSTHROUGH="on" ;;
+  ""|on) ZOM_PASSTHROUGH="${ZOM_DEFAULTS[passthrough]}" ;;
   off) ZOM_PASSTHROUGH="off" ;;
   *)
-    print -u2 -- "zsh-opencode-mini: shell.passthrough '$ZOM_PASSTHROUGH' invalid (on|off) — using on."
-    ZOM_PASSTHROUGH="on"
+    print -u2 -- "zsh-opencode-mini: shell.passthrough '$ZOM_PASSTHROUGH' invalid (on|off) — using ${ZOM_DEFAULTS[passthrough]}."
+    ZOM_PASSTHROUGH="${ZOM_DEFAULTS[passthrough]}"
   ;;
 esac
 ZOM_PASSTHROUGH_FILE="$ZOM_DATA_DIR/passthrough.$$"
@@ -133,7 +150,7 @@ ZOM_PASSTHROUGH_FILE="$ZOM_DATA_DIR/passthrough.$$"
 # Placeholders: {cmd} {exit} {cwd}. "off" disables the prefill entirely.
 ZOM_FAILURE_PREFILL_TMPL=$(__zom_cfg '.shell.failurePrefill // empty')
 case "$ZOM_FAILURE_PREFILL_TMPL" in
-  "") ZOM_FAILURE_PREFILL_TMPL="上一条命令失败了（exit {exit}）：{cmd}\n帮我分析失败原因并给出修复建议" ;;
+  "") ZOM_FAILURE_PREFILL_TMPL="$ZOM_PREFILL_DEFAULT" ;;
   off) ZOM_FAILURE_PREFILL_TMPL="" ;;
 esac
 
@@ -189,8 +206,11 @@ __zom_precmd() {
   unset __ZOM_T0 __ZOM_CMD
   [[ -n "$cmd" ]] || return 0
 
-  local elapsed_ms=0
   local elapsed_ms=$(( (EPOCHREALTIME - t0) * 1000 ))
+  # A wall-clock step backwards between preexec and precmd makes the duration
+  # negative; 0 is the honest floor (and keeps "-0"/negative ms out of the store).
+  # Plain if, not `&&`, so it cannot trip err_return in the user's shell.
+  if (( elapsed_ms < 0 )); then elapsed_ms=0; fi
   elapsed_ms=${elapsed_ms%%.*}   # truncate to whole ms (zsh printf has no -v)
 
   local ts
@@ -454,3 +474,76 @@ if [[ -n "$ZOM_KEYBIND" ]]; then
   }
   add-zsh-hook precmd __zom_ensure_bind
 fi
+
+# ---- Configuration report (read-only) --------------------------------------
+# zom-config prints every knob the plugin reads, the value in effect in this
+# shell, and where it came from; plus the state of the parts installed on the
+# opencode side. The plugin never writes any configuration file.
+__zom_cfg_line() {
+  local key=$1 value=$2 def=$3 origin
+  origin="config"; [[ "$value" == "$def" ]] && origin="default"
+  printf '  %-18s %s  (%s)\n' "$key" "$value" "$origin"
+}
+zom-config() {
+  emulate -L zsh
+  local strip='s|^[[:space:]]*//.*||'
+  print -r -- "zsh-opencode-mini — configuration report (the plugin never writes config)"
+  if [[ ! -f "$ZOM_CONFIG" ]]; then
+    print -r -- "config: $ZOM_CONFIG (absent — built-in defaults below)"
+  elif sed "$strip" "$ZOM_CONFIG" | jq -e . >/dev/null 2>&1; then
+    print -r -- "config: $ZOM_CONFIG"
+  else
+    print -r -- "config: $ZOM_CONFIG (UNPARSABLE — built-in defaults below)"
+  fi
+  print -r -- "shell (read once when the plugin loads; open a new shell to apply edits):"
+  __zom_cfg_line "binary" "$ZOM_BINARY" "${ZOM_DEFAULTS[binary]}"
+  __zom_cfg_line "keybind" "${ZOM_KEYBIND:-off (disabled)}" "${ZOM_DEFAULTS[keybind]}"
+  __zom_cfg_line "dataDir" "$ZOM_DATA_DIR" "${XDG_DATA_HOME:-$HOME/.local/share}/zsh-opencode-mini"
+  __zom_cfg_line "resume" "$ZOM_RESUME" "${ZOM_DEFAULTS[resume]}"
+  __zom_cfg_line "replay" "$ZOM_REPLAY" "${ZOM_DEFAULTS[replay]}"
+  __zom_cfg_line "replayLimit" "$ZOM_REPLAY_LIMIT" "${ZOM_DEFAULTS[replayLimit]}"
+  __zom_cfg_line "passthrough" "$ZOM_PASSTHROUGH" "${ZOM_DEFAULTS[passthrough]}"
+  __zom_cfg_line "failurePrefill" "${ZOM_FAILURE_PREFILL_TMPL:-off (disabled)}" "$ZOM_PREFILL_DEFAULT"
+  print -r -- "companion (read by the opencode-side plugin, per session):"
+  __zom_cfg_line "failureTtlSeconds" "$ZOM_FAILURE_TTL" "${ZOM_DEFAULTS[failureTtlSeconds]}"
+  local rn
+  rn=$(__zom_cfg '.companion.recentDefaultN // empty')
+  [[ "$rn" == "" || "$rn" == "null" ]] && rn="${ZOM_DEFAULTS[recentDefaultN]}"
+  __zom_cfg_line "recentDefaultN" "$rn" "${ZOM_DEFAULTS[recentDefaultN]}"
+  print -r -- "recipes (top-level \"recipes\"; the name becomes the tool name and the [zom:<name>] tag):"
+  local names name rjson origin
+  names=$( [[ -f "$ZOM_CONFIG" ]] && sed "$strip" "$ZOM_CONFIG" | jq -r '.recipes // {} | keys[]' 2>/dev/null )
+  if [[ -z "$names" ]]; then
+    print -r -- "  (none defined)"
+  else
+    for name in ${(f)names}; do
+      origin="ok"
+      [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || origin="INVALID — name must match ^[A-Za-z0-9_-]+$"
+      rjson=$( [[ -f "$ZOM_CONFIG" ]] && sed "$strip" "$ZOM_CONFIG" | jq -c --arg n "$name" '.recipes[$n] | {on: (.on // "?"), model: (.model // "?")}' 2>/dev/null )
+      printf '  %-18s %s  %s\n' "$name" "$origin" "$rjson"
+    done
+  fi
+  print -r -- "opencode-side parts:"
+  local part resolved fm
+  for part in "$HOME/.config/opencode/plugins/zom-companion.js" "$HOME/.config/opencode/agent/zsh-companion.md"; do
+    if [[ -L "$part" ]]; then
+      resolved=$(readlink "$part")
+      print -r -- "  $part"
+      print -r -- "    -> $resolved"
+    elif [[ -f "$part" ]]; then
+      print -r -- "  $part (regular file)"
+      resolved="$part"
+    else
+      print -r -- "  $part MISSING — the AI side is blind (no history tool, failure signal, or recipes)"
+      resolved=""
+    fi
+    if [[ -n "$resolved" && "$part" == *.md ]]; then
+      fm=$(awk 'NR==1 && /^---[[:space:]]*$/ {f=1; next} f && /^---[[:space:]]*$/ {exit} f && /^[A-Za-z][A-Za-z0-9]*:/ {print substr($0,1,index($0,":")-1)}' "$resolved" 2>/dev/null | paste -sd, -)
+      [[ -n "$fm" ]] && print -r -- "    frontmatter: $fm"
+    fi
+  done
+  print -r -- "mini launcher: $ZOM_BINARY"
+  if ! command -v "$ZOM_BINARY" >/dev/null 2>&1; then
+    print -r -- "  NOT FOUND — run scripts/install-zom-binary.sh or set shell.binary"
+  fi
+}

@@ -51,6 +51,7 @@ Requires: `opencode` (latest v2), `jq`, `base64`.
 | `zom-last` | send the last failed command to `opencode run` |
 | `zom-bg <prompt>` | long-running background session; completion notice arrives as a `zom:` line |
 | `zom: <text>` | delivery lines (recipes / bg notices) printed before your prompt |
+| `zom-config` | print every knob with its effective value and origin (read-only) |
 
 After a failed command, the composer comes pre-filled with an analysis
 prompt (you review, then enter). The AI can also pull history itself via the
@@ -64,13 +65,19 @@ Optional. Copy [`config.example.jsonc`](config.example.jsonc) to
 | Key | Default | Meaning |
 |---|---|---|
 | `shell.keybind` | `"^X"` | summon key; `"off"` disables |
+| `shell.dataDir` | `~/.local/share/zsh-opencode-mini` | history / failure signal / outbox store (`~` allowed) |
 | `shell.resume` | `"main"` | `"main"` = one dedicated session; `"off"` = fresh each time |
 | `shell.replay` / `replayLimit` | `"on"` / `50` | messages redrawn on reopen (`"off"` = none) |
 | `shell.binary` | `"opencode-zom"` | mini launcher binary; default is the zom fork installed by `scripts/install-zom-binary.sh` (official builds lack inline resume / suspend / passthrough and are not fallen back to silently) |
 | `shell.passthrough` | `"on"` | unbound keys go back to the shell instead of being swallowed |
 | `shell.failurePrefill` | built-in | template pre-filled after a failure (`{cmd}` `{exit}` `{cwd}`; `"off"` disables) |
 | `companion.failureTtlSeconds` | `600` | how long a failure stays "fresh" for the AI |
-| `recipes.<name>` | — | declarative model calls on events (`failure` / `bg-done` / `manual`); see the example config |
+| `companion.recentDefaultN` | `20` | lines `zom_context` returns for `query=recent` |
+| `recipes.<name>` (top level) | — | declarative model calls on events (`failure` / `bg-done` / `manual`); the name must match `^[A-Za-z0-9_-]+$`; see the example config |
+
+Config is read once when the plugin loads — open a new shell after editing.
+Run `zom-config` to see everything in effect (including the parts installed
+under `~/.config/opencode/`); the plugin never writes configuration.
 
 ## How it works
 

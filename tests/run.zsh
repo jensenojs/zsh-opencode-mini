@@ -412,9 +412,11 @@ t_S17_zom_bg() {
   assert_contains "S17 ledger records sid" "$ledger" "\"sid\":\"$sid\""
   assert_contains "S17 ledger has pid+started" "$ledger" '"pid":'
   assert_contains "S17 ledger has started" "$ledger" '"started":'
-  # the run is backgrounded; give the mock binary up to 5s to log its argv
+  # the run is backgrounded; wait for the mock binary to log its argv. The
+  # budget must absorb a loaded machine (fork+exec of a fresh zsh can take
+  # seconds under heavy load), not a fresh one — 20s, still bounded.
   local tries=0
-  while (( tries < 50 )) && ! grep -q "argv=run" "$ZOM_MOCK_LOG" 2>/dev/null; do
+  while (( tries < 200 )) && ! grep -q "argv=run" "$ZOM_MOCK_LOG" 2>/dev/null; do
     sleep 0.1
     tries=$(( tries + 1 ))
   done
@@ -431,11 +433,66 @@ t_S17_zom_bg() {
 # --- runner ----------------------------------------------------------------
 print -r -- "zsh-opencode-mini test suite"
 print -r -- "plugin: $PLUGIN"
+t_S18_zom_config() {
+  # read-only report: defaults marked as defaults, config values marked as
+  # config, recipes listed by name, opencode parts resolved
+  sandbox
+  local out
+  out=$(run_zsh 'zom-config' 2>&1)
+  assert_contains "S18 absent config flagged"   "$out" "(absent"
+  assert_contains "S18 binary default"          "$out" "binary             opencode-zom  (default)"
+  assert_contains "S18 resume default"          "$out" "resume             main  (default)"
+  assert_contains "S18 replayLimit default"     "$out" "replayLimit        50  (default)"
+  assert_contains "S18 no recipes"              "$out" "(none defined)"
+  assert_contains "S18 agent part listed"       "$out" "zsh-companion.md"
+  assert_contains "S18 companion key present"   "$out" "failureTtlSeconds  600  (default)"
+  sandbox
+  write_config <<'CFG'
+{
+  "shell": { "replayLimit": 7, "keybind": "off" },
+  "companion": { "recentDefaultN": 9 },
+  "recipes": {
+    "watch-tests": { "on": "failure", "model": "zhipuai-coding-plan/glm-5.3-flash" },
+    "bad name!":   { "on": "failure", "model": "zhipuai-coding-plan/glm-5.3-flash" }
+  }
+}
+CFG
+  out=$(run_zsh 'zom-config' 2>&1)
+  assert_contains "S18 config value marked"     "$out" "replayLimit        7  (config)"
+  assert_contains "S18 keybind disabled shown"  "$out" "keybind            off (disabled)"
+  assert_contains "S18 companion config value"  "$out" "recentDefaultN     9  (config)"
+  assert_contains "S18 recipe listed ok"        "$out" "watch-tests"
+  assert_contains "S18 recipe name validated"   "$out" "INVALID"
+  # every recipe name that reaches the user is screened by the same regex the
+  # opencode side enforces — a bad name is visible here, not silent
+  local badline
+  badline=$(print -r -- "$out" | grep 'bad name')
+  assert_contains "S18 bad recipe flagged same line" "$badline" "INVALID"
+}
+
+t_S19_agent_md_frontmatter() {
+  # the installed agent md is a behavior contract; its frontmatter may carry
+  # only identity keys. Anything else (a model pin, a hidden toggle for other
+  # agents) must fail the suite, so it cannot creep in invisibly.
+  local md="$ROOT/agent/zsh-companion.md"
+  assert_file_exists "$md" "S19 agent md present in repo"
+  local keys k
+  keys=$(awk 'NR==1 && /^---[[:space:]]*$/ {f=1; next} f && /^---[[:space:]]*$/ {exit} f && /^[A-Za-z][A-Za-z0-9]*:/ {print substr($0,1,index($0,":")-1)}' "$md")
+  assert_contains "S19 frontmatter parsed" "$keys" "description"
+  for k in ${(f)keys}; do
+    case "$k" in
+      description|mode|hidden) ok "S19 frontmatter key allowed: $k" ;;
+      *) bad "S19 frontmatter key allowed: $k" "unexpected key — move behavior into the body or config.jsonc" ;;
+    esac
+  done
+}
+
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
          t_S12_err_return_survival t_S13_broken_config t_S14_concurrent_append \
-         t_S15_zom_last_empty t_S16_outbox_cursor t_S17_zom_bg; do
+         t_S15_zom_last_empty t_S16_outbox_cursor t_S17_zom_bg \
+         t_S18_zom_config t_S19_agent_md_frontmatter; do
   print -r -- "[$t]"
   $t
 done
