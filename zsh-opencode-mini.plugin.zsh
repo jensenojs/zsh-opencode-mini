@@ -363,6 +363,11 @@ __zom_launch_mini() {
     rm -f "$ZOM_PASSTHROUGH_FILE"
     local -x ZOM_PASSTHROUGH_FILE="$ZOM_PASSTHROUGH_FILE"
   fi
+  # The summon loop reuses one session; the entry ("▪ oc mini …") and exit
+  # ("Session …") splash banners would stamp a fresh pair into scrollback on
+  # every C-x. Hide them via the CLI-config env overlay — this plugin-owned
+  # override never touches the user's cli.json.
+  local -x OPENCODE_CLI_CONFIG_CONTENT='{"mini":{"splash":"hide"}}'
   case "$ZOM_RESUME" in
     main)
       case "$ZOM_REPLAY" in
