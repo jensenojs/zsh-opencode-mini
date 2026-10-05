@@ -368,13 +368,20 @@ __zom_launch_mini() {
   # every C-x. Hide them via the CLI-config env overlay — this plugin-owned
   # override never touches the user's cli.json.
   local -x OPENCODE_CLI_CONFIG_CONTENT='{"mini":{"splash":"hide"}}'
+  # Optional model pin, format provider/model[#variant] (e.g.
+  # "zhipuai-coding-plan/glm-5.3-flash#low"). Empty = follow the global
+  # default model untouched. mini has no variant-only flag, so a variant
+  # must ride on -m.
+  local model_flag=()
+  ZOM_MODEL=$(__zom_cfg '.shell.model')
+  [[ "$ZOM_MODEL" != "" && "$ZOM_MODEL" != "null" ]] && model_flag=(-m "$ZOM_MODEL")
   case "$ZOM_RESUME" in
     main)
       case "$ZOM_REPLAY" in
-        on)  "$ZOM_BINARY" mini -s "$ZOM_MAIN_SESSION" --replay-limit "$ZOM_REPLAY_LIMIT" --agent "$ZOM_AGENT" "$@" ;;
-        off) "$ZOM_BINARY" mini -s "$ZOM_MAIN_SESSION" --no-replay --agent "$ZOM_AGENT" "$@" ;;
+        on)  "$ZOM_BINARY" mini -s "$ZOM_MAIN_SESSION" --replay-limit "$ZOM_REPLAY_LIMIT" --agent "$ZOM_AGENT" "${model_flag[@]}" "$@" ;;
+        off) "$ZOM_BINARY" mini -s "$ZOM_MAIN_SESSION" --no-replay --agent "$ZOM_AGENT" "${model_flag[@]}" "$@" ;;
       esac ;;
-    off) "$ZOM_BINARY" mini --agent "$ZOM_AGENT" "$@" ;;
+    off) "$ZOM_BINARY" mini --agent "$ZOM_AGENT" "${model_flag[@]}" "$@" ;;
   esac
 }
 

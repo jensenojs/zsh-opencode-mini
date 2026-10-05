@@ -41,7 +41,11 @@
     // Prompt pre-filled (not sent) in the composer after a failed command,
     // within failureTtlSeconds. Placeholders: {cmd} {exit} {cwd}.
     // Omit for the built-in Chinese template; "off" disables the prefill.
-    "failurePrefill": null
+    "failurePrefill": null,
+    // Optional model pin, "provider/model#variant" — e.g.
+    // "zhipuai-coding-plan/glm-5.3-flash#low". Empty follows the global
+    // default model untouched. mini has no variant-only flag.
+    "model": ""
   },
   "companion": {
     // How long (seconds) a failed command stays "fresh" for context injection.
