@@ -91,11 +91,13 @@ if ! command -v "$ZOM_BINARY" >/dev/null 2>&1; then
   print -u2 -- "  install it:  scripts/install-zom-binary.sh   (or pin shell.binary)"
   ZOM_BINARY=""
 fi
-typeset -gr ZOM_BINARY
+# re-source safety: typeset -gr on an existing readonly aborts the whole
+# source (leaving the widget undefined) under err_return; skip when present.
+(( $+ZOM_BINARY )) || typeset -gr ZOM_BINARY
 
 # ---- Internal defaults (not configuration; edit the source if you must) ----
-typeset -gr ZOM_AGENT="zsh-companion"   # agent name, defined in agent/zsh-companion.md
-typeset -gr ZOM_MAIN_SESSION="ses_zom-main"  # the dedicated assistant session ("resume": "main")
+(( $+ZOM_AGENT )) || typeset -gr ZOM_AGENT="zsh-companion"   # agent name, defined in agent/zsh-companion.md
+(( $+ZOM_MAIN_SESSION )) || typeset -gr ZOM_MAIN_SESSION="ses_zom-main"  # the dedicated assistant session ("resume": "main")
 # Replay behaviour when resuming the main session (v2.0.21 mini source:
 # opening prints the newest N messages into the terminal scrollback, N
 # defaulting to 200 — that reprint is the screen-flooding you see on C-x):
@@ -118,7 +120,7 @@ elif [[ "$ZOM_REPLAY_LIMIT" != <-> || "$ZOM_REPLAY_LIMIT" -lt 1 ]]; then
   print -u2 -- "zsh-opencode-mini: shell.replayLimit '$ZOM_REPLAY_LIMIT' invalid (positive integer) — using ${ZOM_DEFAULTS[replayLimit]}."
   ZOM_REPLAY_LIMIT="${ZOM_DEFAULTS[replayLimit]}"
 fi
-typeset -gr ZOM_OSC_CODE="7777"         # private OSC code; may change when the fork lands
+(( $+ZOM_OSC_CODE )) || typeset -gr ZOM_OSC_CODE="7777"         # private OSC code; may change when the fork lands
 
 # Failure→prefill TTL (seconds). Shared with the opencode-side companion
 # plugin, which guards the same last-failure.json signal with the same key.
@@ -385,6 +387,38 @@ __zom_launch_mini() {
   esac
 }
 
+# Find a stopped mini job of THIS shell and store its zsh job spec ("%N") in
+# ZOM_STOPPED_JOB (empty when none). Widget-launched jobs carry no command
+# text — zsh only records the command line being parsed, and a ZLE widget
+# runs outside the parser — so "%?string" matching never sees them and must
+# not be used. Match by pid instead: a stopped direct child of this shell
+# running the zom binary. zom-bg jobs (`opencode-zom run … &`) also match;
+# resuming one merely lets it continue, which is acceptable.
+#
+# Current-shell discipline: zsh job tables are invisible inside $(…)
+# subshells, so jobs -l is redirected to a file and read back — no command
+# substitution around jobs output, ever. The function must be called
+# directly, never via $(...).
+__zom_stopped_mini_job() {
+  ZOM_STOPPED_JOB=""
+  local tmp="$TMPPREFIX-stopped-job.$$"
+  { jobs -l >"$tmp"; } 2>/dev/null || return 0
+  local line pid jnum
+  for pid in $(ps -axo pid=,ppid=,stat=,comm= 2>/dev/null \
+    | awk -v shell="$$" '$2 == shell && $3 ~ /^T/ && $4 ~ /opencode-zom$/ {print $1}' \
+    | sort -rn); do
+    while IFS= read -r line; do
+      [[ "$line" == *\ $pid\ * ]] || continue
+      jnum=${${line#\[}%%]*}
+      if [[ -n "$jnum" ]]; then
+        ZOM_STOPPED_JOB="%$jnum"
+        break 2
+      fi
+    done <"$tmp"
+  done
+  command rm -f "$tmp"
+}
+
 # ZLE widget: pause the line editor (zle -I), run the fullscreen TUI,
 # then repaint the prompt.
 __zom_mini_widget() {
@@ -395,11 +429,13 @@ __zom_mini_widget() {
   print -- ""
   # Toggle: when a previous C-x / ctrl+z hid mini as a stopped job, resume
   # that same process in place (same session, same screen) instead of
-  # launching a fresh one. The job spec must be quoted — an unquoted ? is a
-  # glob character. Matching "opencode-zom mini" excludes stopped zom-bg
-  # jobs (they run `opencode-zom run …`). No such job → fg fails quietly
-  # and we fall through to a normal launch.
-  if ! fg '%?opencode-zom mini' 2>/dev/null; then
+  # launching a fresh one. No such job → launch normally.
+  local job
+  __zom_stopped_mini_job
+  job=$ZOM_STOPPED_JOB
+  if [[ -n "$job" ]] && fg "$job" 2>/dev/null; then
+    :
+  else
     __zom_launch_mini
   fi
   # Passthrough replay: mini exited on a key it does not handle and left the

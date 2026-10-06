@@ -491,14 +491,36 @@ t_S20_widget_toggle_fg() {
   # C-x at the shell must prefer resuming a stopped mini (the ctrl+x /
   # ctrl+z hide path) over launching a new one: same process, same screen,
   # no fresh banner. Structural check — the real keystroke→ZLE→fg loop is
-  # declared NOT automated (see header boundary); what the suite pins here
-  # is the toggle guard existing in the widget and matching only the mini
-  # job (not zom-bg's `opencode-zom run …` jobs).
+  # declared NOT automated (see header boundary). Two mechanism facts pin
+  # the shape here: widget-launched jobs carry no command text (zsh records
+  # nothing for commands exec'd inside ZLE widgets, so %?str never matches),
+  # and zsh job tables are invisible inside $(…) subshells (so jobs -l must
+  # be read in the current shell, via redirect — never $(jobs)).
   local body
-  body=$(awk '/^__zom_mini_widget\(\)/{f=1} f{print} f && /^}/{exit}' "$PLUGIN")
-  assert_contains "S20 widget resumes stopped mini first" "$body" "fg '%?opencode-zom mini'"
-  # launch only as the fallthrough branch of the fg guard
-  assert_contains "S20 launch is fg fallthrough" "$body" "if ! fg '%?opencode-zom mini'"
+  body=$(awk '/^__zom_stopped_mini_job\(\)/{f=1} f{print} f && /^}/{exit}' "$PLUGIN")
+  assert_contains "S20 job lookup by pid not %?" "$body" 'ps -axo pid=,ppid=,stat=,comm='
+  assert_contains "S20 job lookup matches stopped children" "$body" '$3 ~ /^T/'
+  assert_contains "S20 jobs read in current shell" "$body" 'jobs -l >"$tmp"'
+  assert_not_contains "S20 no command substitution on jobs" "$body" '$(jobs'
+  local widget
+  widget=$(awk '/^__zom_mini_widget\(\)/{f=1} f{print} f && /^}/{exit}' "$PLUGIN")
+  assert_contains "S20 widget resumes via job spec" "$widget" 'fg "$job"'
+  if [[ "$widget" == *'%?'* ]]; then
+    bad "S20 widget free of %? matching" "found %? — it cannot match widget-launched jobs"
+  else
+    ok "S20 widget free of %? matching"
+  fi
+}
+
+t_S21_resource_idempotent() {
+  # re-sourcing the plugin (sheldon cache rebuild, user dotfile reload) must
+  # not abort halfway: typeset -gr on an existing readonly throws under
+  # err_return and leaves the widget undefined (real regression observed).
+  sandbox
+  local out
+  out=$(run_zsh "source '$PLUGIN' && source '$PLUGIN' && print -r -- \${widgets[__zom_mini_widget]:-<none>}; echo RS=\$?" 2>/dev/null)
+  assert_contains "S21 double source keeps widget" "$out" "__zom_mini_widget"
+  assert_contains "S21 double source exit 0" "$out" "RS=0"
 }
 
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
@@ -506,7 +528,7 @@ for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
          t_S12_err_return_survival t_S13_broken_config t_S14_concurrent_append \
          t_S15_zom_last_empty t_S16_outbox_cursor t_S17_zom_bg \
-         t_S18_zom_config t_S19_agent_md_frontmatter t_S20_widget_toggle_fg; do
+         t_S18_zom_config t_S19_agent_md_frontmatter t_S20_widget_toggle_fg t_S21_resource_idempotent; do
   print -r -- "[$t]"
   $t
 done
