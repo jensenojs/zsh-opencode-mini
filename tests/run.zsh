@@ -396,6 +396,27 @@ t_S16_outbox_cursor() {
   cleanup
 }
 
+t_S16_outbox_malformed() {
+  # a malformed complete line must cost only itself: valid lines before and
+  # after it still deliver, one warning names the skipped count, cursor runs
+  # to EOF (all lines were complete)
+  sandbox
+  mkdir -p "$DD"
+  print -r -- '{"id":"a","kind":"recipe","text":"before garbage"}' > "$DD/outbox.jsonl"
+  print -r -- 'notjson-at-all' >> "$DD/outbox.jsonl"
+  print -r -- '{"id":"c","kind":"recipe","text":"after garbage"}' >> "$DD/outbox.jsonl"
+  local out
+  out=$(run_zsh '__zom_outbox_drain' 2>&1)
+  assert_contains "S16b pre-malformed line survives"  "$out" "zom: before garbage"
+  assert_contains "S16b post-malformed line survives" "$out" "zom: after garbage"
+  assert_contains "S16b one warning with count"       "$out" "1 unparsable outbox line"
+  local cursor size
+  cursor=$(cat "$DD/outbox.cursor")
+  size=$(run_zsh "zstat +size '$DD/outbox.jsonl'")
+  assert_eq "S16b cursor at EOF (all lines complete)" "$cursor" "$size"
+  cleanup
+}
+
 t_S17_zom_bg() {
   # zom-bg spawns `opencode run -s <sid>` in the background (never
   # --standalone: the session must stay reachable by mini), writes the
@@ -500,6 +521,7 @@ t_S20_widget_toggle_fg() {
   body=$(awk '/^__zom_stopped_mini_job\(\)/{f=1} f{print} f && /^}/{exit}' "$PLUGIN")
   assert_contains "S20 job lookup by pid not %?" "$body" 'ps -axo pid=,ppid=,stat=,comm='
   assert_contains "S20 job lookup matches stopped children" "$body" '$3 ~ /^T/'
+  assert_contains "S20 stopped-job match uses configured binary basename" "$body" 'bname="${ZOM_BINARY##*/}"'
   assert_contains "S20 jobs read in current shell" "$body" 'jobs -l >"$tmp"'
   assert_not_contains "S20 no command substitution on jobs" "$body" '$(jobs'
   local widget
@@ -527,7 +549,7 @@ for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
          t_S12_err_return_survival t_S13_broken_config t_S14_concurrent_append \
-         t_S15_zom_last_empty t_S16_outbox_cursor t_S17_zom_bg \
+         t_S15_zom_last_empty t_S16_outbox_cursor t_S16_outbox_malformed t_S17_zom_bg \
          t_S18_zom_config t_S19_agent_md_frontmatter t_S20_widget_toggle_fg t_S21_resource_idempotent; do
   print -r -- "[$t]"
   $t

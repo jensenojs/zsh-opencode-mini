@@ -93,7 +93,8 @@ if ! command -v "$ZOM_BINARY" >/dev/null 2>&1; then
 fi
 # re-source safety: typeset -gr on an existing readonly aborts the whole
 # source (leaving the widget undefined) under err_return; skip when present.
-(( $+ZOM_BINARY )) || typeset -gr ZOM_BINARY
+# ZOM_BINARY takes no guard: it is assigned unconditionally above, so it is
+# never readonly and never needs one.
 
 # ---- Internal defaults (not configuration; edit the source if you must) ----
 (( $+ZOM_AGENT )) || typeset -gr ZOM_AGENT="zsh-companion"   # agent name, defined in agent/zsh-companion.md
@@ -296,14 +297,25 @@ __zom_outbox_drain() {
     (( consumed > 0 )) || return 0
   fi
 
-  local texts
-  if ! texts=$(printf '%s' "${chunk[1,consumed]}" | jq -r '.text // empty' 2>/dev/null); then
-    print -u2 -- "zsh-opencode-mini: unparsable outbox content skipped (cursor advanced)"
+  # Per-line parse: one malformed line must not cost the valid lines after it
+  # (a chunk-level jq loses everything past the first bad line, and the cursor
+  # would advance past them anyway).
+  local line text bad=0
+  while IFS= read -r line; do
+    if [[ -z "$line" ]]; then
+      continue
+    fi
+    if text=$(printf '%s' "$line" | jq -r '.text // empty' 2>/dev/null); then
+      if [[ -n "$text" ]]; then
+        print -u2 -- "zom: $text"
+      fi
+    else
+      bad=$(( bad + 1 ))
+    fi
+  done <<< "${chunk[1,consumed]}"
+  if (( bad > 0 )); then
+    print -u2 -- "zsh-opencode-mini: $bad unparsable outbox line(s) skipped (cursor advanced)"
   fi
-  local line
-  for line in ${(f)texts}; do
-    [[ -n "$line" ]] && print -u2 -- "zom: $line"
-  done
 
   print -r -- "$(( start + consumed ))" > "$ZOM_DATA_DIR/outbox.cursor"
   return 0
@@ -405,7 +417,7 @@ __zom_stopped_mini_job() {
   { jobs -l >"$tmp"; } 2>/dev/null || return 0
   local line pid jnum
   for pid in $(ps -axo pid=,ppid=,stat=,comm= 2>/dev/null \
-    | awk -v shell="$$" '$2 == shell && $3 ~ /^T/ && $4 ~ /opencode-zom$/ {print $1}' \
+    | awk -v shell="$$" -v bname="${ZOM_BINARY##*/}" '$2 == shell && $3 ~ /^T/ && substr($4, length($4) - length(bname) + 1) == bname {print $1}' \
     | sort -rn); do
     while IFS= read -r line; do
       [[ "$line" == *\ $pid\ * ]] || continue
@@ -560,6 +572,13 @@ zom-config() {
   __zom_cfg_line "replayLimit" "$ZOM_REPLAY_LIMIT" "${ZOM_DEFAULTS[replayLimit]}"
   __zom_cfg_line "passthrough" "$ZOM_PASSTHROUGH" "${ZOM_DEFAULTS[passthrough]}"
   __zom_cfg_line "failurePrefill" "${ZOM_FAILURE_PREFILL_TMPL:-off (disabled)}" "$ZOM_PREFILL_DEFAULT"
+  local mv
+  mv=$(__zom_cfg '.shell.model // empty')
+  if [[ "$mv" == "" || "$mv" == "null" ]]; then
+    printf '  %-18s %s\n' "model" "(not pinned — agent default)"
+  else
+    printf '  %-18s %s  (config)\n' "model" "$mv"
+  fi
   print -r -- "companion (read by the opencode-side plugin, per session):"
   __zom_cfg_line "failureTtlSeconds" "$ZOM_FAILURE_TTL" "${ZOM_DEFAULTS[failureTtlSeconds]}"
   local rn
