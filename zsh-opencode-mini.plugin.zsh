@@ -393,7 +393,15 @@ __zom_mini_widget() {
   # cursor past column 0; zle -I leaves the cursor at the prompt column.
   # Emit a newline so mini starts on a fresh line (same as a direct command).
   print -- ""
-  __zom_launch_mini
+  # Toggle: when a previous C-x / ctrl+z hid mini as a stopped job, resume
+  # that same process in place (same session, same screen) instead of
+  # launching a fresh one. The job spec must be quoted — an unquoted ? is a
+  # glob character. Matching "opencode-zom mini" excludes stopped zom-bg
+  # jobs (they run `opencode-zom run …`). No such job → fg fails quietly
+  # and we fall through to a normal launch.
+  if ! fg '%?opencode-zom mini' 2>/dev/null; then
+    __zom_launch_mini
+  fi
   # Passthrough replay: mini exited on a key it does not handle and left the
   # raw bytes in the passthrough file. Push them into ZLE so the key takes
   # effect at the shell prompt instead of being lost.

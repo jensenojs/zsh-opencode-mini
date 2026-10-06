@@ -487,12 +487,26 @@ t_S19_agent_md_frontmatter() {
   done
 }
 
+t_S20_widget_toggle_fg() {
+  # C-x at the shell must prefer resuming a stopped mini (the ctrl+x /
+  # ctrl+z hide path) over launching a new one: same process, same screen,
+  # no fresh banner. Structural check — the real keystroke→ZLE→fg loop is
+  # declared NOT automated (see header boundary); what the suite pins here
+  # is the toggle guard existing in the widget and matching only the mini
+  # job (not zom-bg's `opencode-zom run …` jobs).
+  local body
+  body=$(awk '/^__zom_mini_widget\(\)/{f=1} f{print} f && /^}/{exit}' "$PLUGIN")
+  assert_contains "S20 widget resumes stopped mini first" "$body" "fg '%?opencode-zom mini'"
+  # launch only as the fallthrough branch of the fg guard
+  assert_contains "S20 launch is fg fallthrough" "$body" "if ! fg '%?opencode-zom mini'"
+}
+
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
          t_S12_err_return_survival t_S13_broken_config t_S14_concurrent_append \
          t_S15_zom_last_empty t_S16_outbox_cursor t_S17_zom_bg \
-         t_S18_zom_config t_S19_agent_md_frontmatter; do
+         t_S18_zom_config t_S19_agent_md_frontmatter t_S20_widget_toggle_fg; do
   print -r -- "[$t]"
   $t
 done
