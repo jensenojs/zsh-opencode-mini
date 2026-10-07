@@ -24,7 +24,15 @@
 //   - zom-bg notifications: watch session.execution.* for background sessions
 //     recorded in bg.jsonl and append {kind:"bg-done"} lines to the outbox
 
-import { readFileSync, existsSync, watch, appendFileSync, mkdirSync } from "node:fs"
+import {
+  readFileSync,
+  existsSync,
+  watch,
+  appendFileSync,
+  mkdirSync,
+  writeFileSync,
+  renameSync,
+} from "node:fs"
 import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -35,9 +43,19 @@ const DEFAULTS = {
   recipeTtlSeconds: 900,
 }
 
-// Recipe trigger/delivery vocabulary. Unknown values are a config error —
-// loud throw at setup, same discipline as the API contract check.
-const RECIPE_ON = ["failure", "bg-done", "manual"]
+// The three trigger sources and the template slots each one actually
+// substitutes at its fire site: failure -> fireFailureRecipes (the
+// last-failure.json watcher), manual -> the zom_recipe_<name> tools (the
+// input schema at registration), bg-done -> the session.execution.* event
+// loop. The keys are the entire legal `on` vocabulary: a recipe whose `on`
+// has no entry here could never fire, and a template slot outside its
+// trigger's set would render as "" at fire time — compileRecipes refuses
+// both loudly instead of wiring either half-silent.
+const TRIGGERS = {
+  failure: { slots: ["cmd", "exit", "cwd"] },
+  manual: { slots: ["cmd", "exit", "cwd"] },
+  "bg-done": { slots: ["sid", "cwd"] },
+}
 const RECIPE_DELIVER = ["next-session", "outbox"]
 const RECIPE_NAME = /^[a-zA-Z0-9_-]+$/
 
@@ -95,10 +113,25 @@ function compileRecipes(raw) {
           `(it becomes a tool name and a storage/outbox key component).`,
       )
     }
-    if (!RECIPE_ON.includes(r?.on)) {
+    const trigger = TRIGGERS[r?.on]
+    if (!trigger) {
       throw new Error(
         `[zsh-companion] recipe "${name}": unknown on value ${JSON.stringify(r?.on)} ` +
-          `(expected one of ${RECIPE_ON.join(", ")}).`,
+          `(expected one of ${Object.keys(TRIGGERS).join(", ")}).`,
+      )
+    }
+    // Same slot syntax fill() substitutes — validating the exact pattern the
+    // runtime will replace keeps compile and fire from drifting apart.
+    const unknownSlots = [
+      ...new Set(
+        [...String(r?.prompt ?? "").matchAll(/\{(\w+)\}/g)].map((m) => m[1]),
+      ),
+    ].filter((s) => !trigger.slots.includes(s))
+    if (unknownSlots.length > 0) {
+      throw new Error(
+        `[zsh-companion] recipe "${name}": prompt slot(s) ` +
+          `${unknownSlots.map((s) => `{${s}}`).join(" ")} not provided by the ` +
+          `${JSON.stringify(r.on)} trigger (provides: ${trigger.slots.join(", ")}).`,
       )
     }
     if (!RECIPE_DELIVER.includes(r?.deliver)) {
@@ -218,7 +251,39 @@ export default {
     mkdirSync(dataDir, { recursive: true })
 
     const outboxPath = join(dataDir, "outbox.jsonl")
+    // Outbox growth is capped by rotation, not by a backup file: these are
+    // minute-scale hints the drain prints once (DESIGN.md declares notices
+    // tolerable to duplication and loss), so a rotated-out .1 file would be
+    // a second owner of disposable data.
+    const rotateOutbox = () => {
+      if (!existsSync(outboxPath)) return
+      const buf = readFileSync(outboxPath)
+      if (buf.length <= 1_000_000) return
+      // Keep complete lines only: drop a torn tail (a crashed append), then
+      // cut the head at the first newline at/after the 64KB tail budget.
+      let end = buf.length
+      if (buf[end - 1] !== 0x0a) end = buf.lastIndexOf(0x0a) + 1
+      let start = Math.max(0, end - 64 * 1024)
+      if (start > 0) {
+        const nl = buf.indexOf(0x0a, start)
+        start = nl === -1 ? end : nl + 1
+      }
+      // tmp+mv replace (the last-failure.json protocol): a drain holding an
+      // open fd finishes reading the old inode instead of a truncated file.
+      const tmp = `${outboxPath}.tmp`
+      writeFileSync(tmp, buf.subarray(start, end))
+      renameSync(tmp, outboxPath)
+    }
+    // Rotation vs the zsh byte cursor (outbox.cursor, owned by zsh-side
+    // __zom_outbox_drain): after rotating, the file is ≤64KB, so a cursor
+    // beyond it trips the drain's "cursor > size → start over" reset and the
+    // retained tail replays once — at-least-once, which the drain already
+    // tolerates; only the dropped prefix is truly gone. The narrow window
+    // where a cursor sits below the rotated size points into renamed content
+    // and costs at most one unparsable-line warning (the drain skips it and
+    // advances). The cursor stays zsh-owned; this side never writes it.
     const appendOutbox = (record) => {
+      rotateOutbox()
       appendFileSync(
         outboxPath,
         JSON.stringify({ id: randomUUID(), ts: new Date().toISOString(), ...record }) + "\n",
@@ -236,8 +301,6 @@ export default {
       String(template ?? "").replace(/\{(\w+)\}/g, (m, key) => (slots[key] ?? ""))
 
     // The one recipe pipeline: gate on rate, generate, deliver. All trigger
-    // sources (failure watch, bg-done event, manual tool) funnel through here.
-    // One recipe pipeline: gate on rate, generate, deliver. All trigger
     // sources (failure watch, bg-done event, manual tool) funnel through here.
     const fireRecipe = async (name, recipe, slots) => {
       if (recipe.ratePerHour !== undefined) {

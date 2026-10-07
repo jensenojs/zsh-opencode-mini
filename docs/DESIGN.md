@@ -348,3 +348,10 @@ data layer final, leave the rendering layer to the fork.
 - an unparsable line in `outbox.jsonl` is skipped with a warning and the
   cursor advances past it — one bad line never blocks the drain, but its
   content is lost
+- `outbox.jsonl` is capped by rotation, not by a backup file: past 1 MB the
+  plugin rewrites it to the last ≤64 KB of complete lines (a torn line left
+  by a crashed append is dropped) and discards the older prefix outright —
+  notices are minute-scale hints printed once, tolerable to duplication and
+  loss by design. After a rotation the shell's byte cursor exceeds the file
+  size and resets to zero, so the retained tail replays once: expect a few
+  repeated `zom:` lines, never anything older than the kept tail

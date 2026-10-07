@@ -237,9 +237,12 @@ __zom_json_escape() {
 
 # preexec: command starts. Store start time and command text
 # (precmd does not receive the command line).
+# __ZOM_T0/__ZOM_CMD cross the hook boundary (preexec -> precmd), so they
+# must live at global scope for the duration of one command; precmd copies
+# both into locals and unsets them before the next prompt can observe them.
 __zom_preexec() {
-  __ZOM_T0=$EPOCHREALTIME
-  __ZOM_CMD=$1
+  typeset -g __ZOM_T0=$EPOCHREALTIME
+  typeset -g __ZOM_CMD=$1
 }
 
 # precmd: command finished. Append one JSON line to the monthly history file,
@@ -415,38 +418,95 @@ __zom_failure_prefill() {
   printf -- '%s' "$out"
 }
 
+# The argv contract between this plugin and the zom fork build: one function
+# builds the complete `mini` argv, one probe verifies the binary actually
+# knows these flags, and the launcher only probes + execs.
+
+# Capability probe. The stock opencode binary lacks the fork's mini flags
+# and would fail or silently degrade at exec time, so before the first
+# launch ask `mini --help` for every flag this plugin passes (the top-level
+# --help does not list subcommand flags). Success is cached for the shell's
+# lifetime — one fork ever. Failure is deliberately not cached: the user may
+# swap in a fixed binary, and the next launch must retry the probe.
+typeset -g ZOM_PROBE_OK=""
+__zom_mini_probe() {
+  if [[ "$ZOM_PROBE_OK" == ok ]]; then
+    return 0
+  fi
+  if [[ -z "$ZOM_BINARY" ]]; then
+    print -u2 -- "zsh-opencode-mini: mini launcher binary not found: $ZOM_BINARY"
+    print -u2 -- "  install it:  scripts/install-zom-binary.sh   (or pin shell.binary)"
+    return 1
+  fi
+  local help
+  if ! help=$("$ZOM_BINARY" mini --help 2>&1); then
+    print -u2 -- "zsh-opencode-mini: '$ZOM_BINARY mini --help' failed — not a working mini binary"
+    return 1
+  fi
+  local -a missing=()
+  local f
+  for f in --agent --replay-limit --no-replay --prefill; do
+    if [[ "$help" != *"$f"* ]]; then
+      missing+=("$f")
+    fi
+  done
+  if (( ${#missing[@]} > 0 )); then
+    print -u2 -- "zsh-opencode-mini: $ZOM_BINARY does not advertise mini flags: ${missing[*]}"
+    print -u2 -- "  the binary is likely not the zom fork build — install: scripts/install-zom-binary.sh (or pin shell.binary)"
+    return 1
+  fi
+  ZOM_PROBE_OK=ok
+}
+
+# out-param ZOM_ARGV: the caller declares it local (zsh dynamic scoping
+# carries the binding here), so the array never occupies the user's global
+# namespace.
+__zom_mini_argv() {
+  ZOM_ARGV=(mini)
+  if [[ "$ZOM_RESUME" == main ]]; then
+    ZOM_ARGV+=(-s "$ZOM_MAIN_SESSION")
+    case "$ZOM_REPLAY" in
+      on)  ZOM_ARGV+=(--replay-limit "$ZOM_REPLAY_LIMIT") ;;
+      off) ZOM_ARGV+=(--no-replay) ;;
+    esac
+  fi
+  ZOM_ARGV+=(--agent "$ZOM_AGENT")
+  if [[ -n "${ZOM_CFG[model]}" ]]; then
+    ZOM_ARGV+=(-m "${ZOM_CFG[model]}")   # no variant-only flag: variant rides on -m
+  fi
+  # Fresh failure -> a prefilled composer (fork --prefill: the text lands in
+  # the input box unsent; the user reviews and hits enter).
+  local prefill
+  if prefill=$(__zom_failure_prefill); then
+    ZOM_ARGV+=(--prefill "$prefill")
+  fi
+  ZOM_ARGV+=("$@")   # caller's extra args, verbatim
+}
+
 # The single launch path, shared by the keybind widget and the `zom` function.
 # Kept free of ZLE calls so tests can exercise it without a line editor.
 __zom_launch_mini() {
-  local prefill
-  prefill=$(__zom_failure_prefill) && set -- --prefill "$prefill" "$@"
-  if [[ "$ZOM_PASSTHROUGH" == on ]]; then
-    rm -f "$ZOM_PASSTHROUGH_FILE"
-    local -x ZOM_PASSTHROUGH_FILE="$ZOM_PASSTHROUGH_FILE"
+  if ! __zom_mini_probe; then
+    return 1   # loud: the probe already reported on stderr; do not exec
   fi
   # The summon loop reuses one session; the entry ("▪ oc mini …") and exit
   # ("Session …") splash banners would stamp a fresh pair into scrollback on
   # every C-x. Hide them via the CLI-config env overlay — this plugin-owned
   # override never touches the user's cli.json.
   local -x OPENCODE_CLI_CONFIG_CONTENT='{"mini":{"splash":"hide"}}'
-  # Optional model pin, format provider/model[#variant] (e.g.
-  # "zhipuai-coding-plan/glm-5.3-flash#low"). Empty = follow the global
-  # default model untouched. Read once at plugin load, like every shell.*
-  # key; mini has no variant-only flag, so a variant must ride on -m.
-  local model_flag=()
-  [[ -n "${ZOM_CFG[model]}" ]] && model_flag=(-m "${ZOM_CFG[model]}")
-  case "$ZOM_RESUME" in
-    main)
-      case "$ZOM_REPLAY" in
-        on)  "$ZOM_BINARY" mini -s "$ZOM_MAIN_SESSION" --replay-limit "$ZOM_REPLAY_LIMIT" --agent "$ZOM_AGENT" "${model_flag[@]}" "$@" ;;
-        off) "$ZOM_BINARY" mini -s "$ZOM_MAIN_SESSION" --no-replay --agent "$ZOM_AGENT" "${model_flag[@]}" "$@" ;;
-      esac ;;
-    off) "$ZOM_BINARY" mini --agent "$ZOM_AGENT" "${model_flag[@]}" "$@" ;;
-  esac
+  if [[ "$ZOM_PASSTHROUGH" == on ]]; then
+    rm -f "$ZOM_PASSTHROUGH_FILE"
+    local -x ZOM_PASSTHROUGH_FILE="$ZOM_PASSTHROUGH_FILE"
+  fi
+  local -a ZOM_ARGV
+  __zom_mini_argv "$@"
+  "$ZOM_BINARY" "${ZOM_ARGV[@]}"
 }
 
 # Find a stopped mini job of THIS shell and store its zsh job spec ("%N") in
-# ZOM_STOPPED_JOB (empty when none). Widget-launched jobs carry no command
+# ZOM_STOPPED_JOB (empty when none). The out-param is a caller-local — the
+# widget below declares and owns it; zsh dynamic scoping carries the binding
+# here. Widget-launched jobs carry no command
 # text — zsh only records the command line being parsed, and a ZLE widget
 # runs outside the parser — so "%?string" matching never sees them and must
 # not be used. Match by pid instead: a stopped direct child of this shell
@@ -488,13 +548,15 @@ __zom_mini_widget() {
   # Toggle: when a previous C-x / ctrl+z hid mini as a stopped job, resume
   # that same process in place (same session, same screen) instead of
   # launching a fresh one. No such job → launch normally.
-  local job
+  local ZOM_STOPPED_JOB="" job
   __zom_stopped_mini_job
   job=$ZOM_STOPPED_JOB
   if [[ -n "$job" ]] && fg "$job" 2>/dev/null; then
     :
   else
-    __zom_launch_mini
+    # A keypress must survive an err_return zshrc; the failure printed its
+    # own stderr, so the return value carries nothing new.
+    __zom_launch_mini || true
   fi
   # Passthrough replay: mini exited on a key it does not handle and left the
   # raw bytes in the passthrough file. Push them into ZLE so the key takes

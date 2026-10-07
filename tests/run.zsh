@@ -552,12 +552,43 @@ t_S21_resource_idempotent() {
   assert_contains "S21 double source exit 0" "$out" "RS=0"
 }
 
+t_S22_argv_probe() {
+  # the mini argv is a contract with the zom fork build; the probe asks
+  # `mini --help` for every flag the plugin passes. A binary missing flags
+  # is refused loudly (stderr names the flags), nothing is exec'd, exit 1.
+  # Success caches for the shell's lifetime; failure retries on next launch.
+  sandbox
+  local out rc
+  out=$(PATH="$MOCKBIN:$PATH" ZOM_MOCK_HELP_MISSING="--prefill" zsh -f -c "source '$PLUGIN'; zom" 2>&1) && rc=0 || rc=$?
+  assert_contains "S22 missing flag named"  "$out" "--prefill"
+  assert_contains "S22 fork hint shown"     "$out" "zom fork build"
+  assert_eq    "S22 returns 1"              "$rc" "1"
+  assert_eq    "S22 nothing exec'd"         "$(grep -c 'argv=mini -s' "$ZOM_MOCK_LOG" || true)" "0"
+  cleanup
+
+  # success is cached: two launches in one shell probe exactly once
+  sandbox
+  run_zsh 'zom a; zom b' >/dev/null 2>&1
+  assert_eq "S22 one probe per shell"   "$(grep -c 'argv=mini --help' "$ZOM_MOCK_LOG" || true)" "1"
+  assert_eq "S22 both launches exec'd"  "$(grep -c 'argv=mini -s' "$ZOM_MOCK_LOG" || true)" "2"
+  cleanup
+
+  # failure is not cached: the user may swap in a fixed binary, so the next
+  # launch in the same shell must re-probe (and still refuse to exec)
+  sandbox
+  PATH="$MOCKBIN:$PATH" ZOM_MOCK_HELP_MISSING="--agent" zsh -f -c "source '$PLUGIN'; zom; zom" >/dev/null 2>&1 || true
+  assert_eq "S22 failed probe retried"  "$(grep -c 'argv=mini --help' "$ZOM_MOCK_LOG" || true)" "2"
+  assert_eq "S22 still nothing exec'd"  "$(grep -c 'argv=mini -s' "$ZOM_MOCK_LOG" || true)" "0"
+  cleanup
+}
+
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
          t_S12_err_return_survival t_S13_broken_config t_S14_concurrent_append \
          t_S15_zom_last_empty t_S16_outbox_cursor t_S16_outbox_malformed t_S17_zom_bg \
-         t_S18_zom_config t_S19_agent_md_frontmatter t_S20_widget_toggle_fg t_S21_resource_idempotent; do
+         t_S18_zom_config t_S19_agent_md_frontmatter t_S20_widget_toggle_fg t_S21_resource_idempotent \
+         t_S22_argv_probe; do
   print -r -- "[$t]"
   $t
 done

@@ -16,6 +16,26 @@ print -r -- "cwd=$PWD agent_env=${ZOM_AGENT:-<unset>} passthrough=${ZOM_PASSTHRO
 
 case "$1" in
   mini)
+    # argv-contract probe target: the fork's mini flag list.
+    # ZOM_MOCK_HELP_MISSING (space-separated flags) hides lines, simulating
+    # a binary that is not the zom fork build.
+    if [[ "$2" == "--help" ]]; then
+      print -r -- "DESCRIPTION Start the minimal interactive interface"
+      print -r -- "USAGE opencode mini [flags]"
+      if [[ "${ZOM_MOCK_HELP_MISSING:-}" != *--agent* ]]; then
+        print -r -- "  --agent string            Agent to use"
+      fi
+      if [[ "${ZOM_MOCK_HELP_MISSING:-}" != *--replay-limit* ]]; then
+        print -r -- "  --replay-limit integer    Limit replay to the newest N messages"
+      fi
+      if [[ "${ZOM_MOCK_HELP_MISSING:-}" != *--no-replay* ]]; then
+        print -r -- "  --replay                  Restore session history on resume and resize (disable with --no-replay)"
+      fi
+      if [[ "${ZOM_MOCK_HELP_MISSING:-}" != *--prefill* ]]; then
+        print -r -- "  --prefill string          Seed the composer with text without sending it"
+      fi
+      exit 0
+    fi
     print -r -- "[mock mini TUI]"
     while read -r line; do
       print -r -- "mock-echo: $line"

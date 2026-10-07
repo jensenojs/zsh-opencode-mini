@@ -215,6 +215,9 @@ try {
   {
     const cases = [
       ["unknown on", `{"recipes":{"x":{"on":"cron","model":"p/m","prompt":"p","deliver":"outbox"}}}`, "unknown on value"],
+      ["slot outside trigger (failure {sid})", `{"recipes":{"x":{"on":"failure","model":"p/m","prompt":"{sid}","deliver":"outbox"}}}`, "not provided by"],
+      ["slot outside trigger (bg-done {exit})", `{"recipes":{"x":{"on":"bg-done","model":"p/m","prompt":"{exit}","deliver":"outbox"}}}`, "not provided by"],
+      ["slot outside trigger (manual {sid})", `{"recipes":{"x":{"on":"manual","model":"p/m","prompt":"{sid}","deliver":"outbox"}}}`, "not provided by"],
       ["unknown deliver", `{"recipes":{"x":{"on":"failure","model":"p/m","prompt":"p","deliver":"email"}}}`, "unknown deliver value"],
       ["bad model", `{"recipes":{"x":{"on":"failure","model":"nomatch","prompt":"p","deliver":"outbox"}}}`, "provider/model-id"],
       ["bad exitFilter", `{"recipes":{"x":{"on":"failure","model":"p/m","prompt":"p","deliver":"outbox","exitFilter":["1"]}}}`, "array of integers"],
@@ -443,6 +446,11 @@ try {
     state.generateCalls.length === 2
       ? ok("bg-done recipe fires once per sid")
       : bad("bg-done recipe fires once per sid", JSON.stringify(state.generateCalls))
+    // fill identity against the trigger's slot set: the ledger's cwd lands in
+    // {cwd}, the event's sessionID in {sid}
+    state.generateCalls[0]?.prompt === "done: ses_zom-bg-1 in /w"
+      ? ok("bg-done recipe fill matches trigger slots")
+      : bad("bg-done recipe fill matches trigger slots", JSON.stringify(state.generateCalls[0]))
     const o = readOutbox(sb.dataDir)
     const pokes = o.filter((r) => r.recipe === "poke")
     const done = o.filter((r) => r.kind === "bg-done")
@@ -463,6 +471,64 @@ try {
     evz.system.length === 0
       ? ok("no signal no injection")
       : bad("no signal no injection", JSON.stringify(evz.system))
+    clean()
+  }
+
+  // 17. outbox rotation: past 1MB the append keeps the last ≤64KB of complete
+  //     lines and drops the ancient prefix (no backup file). Below the cap
+  //     nothing is dropped; the zsh byte cursor recovers via its
+  //     cursor>size → restart-from-zero rule, so replaying the tail is fine.
+  {
+    const sb = rootSandbox(); sb.use()
+    sb.write(`{"recipes":{"explain":{"on":"manual","model":"p/m","prompt":"explain {cmd}","deliver":"outbox"}}}`)
+    const { ctx, state } = makeCtx()
+    const clean = plugin.setup(ctx)
+    const tool = state.tools.find((t) => t.name === "zom_recipe_explain")
+    const outbox = join(sb.dataDir, "outbox.jsonl")
+    // uniform-length pad records keep the retained-tail math exact
+    const padLine = (i) =>
+      JSON.stringify({ n: String(i).padStart(6, "0"), kind: "pad", text: `pad-${String(i).padStart(6, "0")}-` + "x".repeat(60) }) + "\n"
+    const L = padLine(0).length
+
+    // below the cap: append only, nothing dropped
+    writeFileSync(outbox, padLine(0) + padLine(1))
+    await tool.execute({ cmd: "small append" })
+    const small = readOutbox(sb.dataDir)
+    small.length === 3 && small[0].kind === "pad" && small[2].text === "hint for explain small append"
+      ? ok("rotation below cap keeps everything")
+      : bad("rotation below cap keeps everything", JSON.stringify(small.map((r) => r.kind ?? r.recipe)))
+
+    // over the cap: seed >1MB of complete pad lines plus a torn trailing
+    // fragment (a crashed append's leftover); the new append must rotate,
+    // keep only the last ≤64KB of complete lines, and land its own record
+    const N = 12000
+    let seed = ""
+    for (let i = 0; i < N; i++) seed += padLine(i)
+    seed += `{"kind":"torn","text":"never completed`
+    if (seed.length <= 1_000_000) bad("rotation seed size", `seed only ${seed.length} bytes`)
+    writeFileSync(outbox, seed)
+    await tool.execute({ cmd: "rotate me" })
+    const raw = readFileSync(outbox, "utf8")
+    let parseOk = true
+    const recs = []
+    for (const l of raw.split("\n").filter(Boolean)) {
+      try { recs.push(JSON.parse(l)) } catch { parseOk = false }
+    }
+    const pads = recs.filter((r) => r.kind === "pad")
+    const ids = pads.map((r) => Number(r.n))
+    const last = recs[recs.length - 1]
+    const padBytes = pads.length * L
+    // retained pads are the maximal suffix fitting 64KB at line granularity
+    const tailKept = padBytes <= 64 * 1024 && padBytes > 64 * 1024 - L
+    parseOk && raw.endsWith("\n") && !raw.includes("torn")
+      && ids.every((v, i) => v === ids[0] + i) && ids[ids.length - 1] === N - 1
+      && tailKept
+      && last?.recipe === "explain" && last?.text === "hint for explain rotate me"
+      && !existsSync(`${outbox}.tmp`)
+      ? ok("rotation keeps aligned tail, drops prefix and torn fragment")
+      : bad("rotation keeps aligned tail, drops prefix and torn fragment",
+          JSON.stringify({ parseOk, endsNl: raw.endsWith("\n"), torn: raw.includes("torn"),
+            firstId: ids[0], lastId: ids[ids.length - 1], padBytes, last }))
     clean()
   }
 } catch (e) {
