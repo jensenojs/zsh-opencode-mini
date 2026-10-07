@@ -236,6 +236,12 @@ EOF
   log=$(cat "$ZOM_MOCK_LOG")
   assert_contains "S6 passthrough=off leaves env unset" "$log" "passthrough=<unset>"
   cleanup
+  sandbox
+  write_config <<<'{ "shell": { "model": "test-provider/test-model#fast" } }'
+  run_zsh 'zom extra-arg' >/dev/null 2>&1
+  log=$(cat "$ZOM_MOCK_LOG")
+  assert_contains "S6 model pin reaches mini via -m" "$log" "-m test-provider/test-model#fast"
+  cleanup
 }
 
 t_S7_zom_last() {
@@ -467,6 +473,7 @@ t_S18_zom_config() {
   assert_contains "S18 no recipes"              "$out" "(none defined)"
   assert_contains "S18 agent part listed"       "$out" "zsh-companion.md"
   assert_contains "S18 companion key present"   "$out" "failureTtlSeconds  600  (default)"
+  assert_contains "S18 model unpinned shown"     "$out" "(not pinned — agent default)"
   sandbox
   write_config <<'CFG'
 {
