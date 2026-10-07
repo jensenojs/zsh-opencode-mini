@@ -515,29 +515,28 @@ t_S19_agent_md_frontmatter() {
   done
 }
 
-t_S20_widget_toggle_fg() {
-  # C-x at the shell must prefer resuming a stopped mini (the ctrl+x /
-  # ctrl+z hide path) over launching a new one: same process, same screen,
-  # no fresh banner. Structural check — the real keystroke→ZLE→fg loop is
-  # declared NOT automated (see header boundary). Two mechanism facts pin
-  # the shape here: widget-launched jobs carry no command text (zsh records
-  # nothing for commands exec'd inside ZLE widgets, so %?str never matches),
-  # and zsh job tables are invisible inside $(…) subshells (so jobs -l must
-  # be read in the current shell, via redirect — never $(jobs)).
-  local body
-  body=$(awk '/^__zom_stopped_mini_job\(\)/{f=1} f{print} f && /^}/{exit}' "$PLUGIN")
-  assert_contains "S20 job lookup by pid not %?" "$body" 'ps -axo pid=,ppid=,stat=,comm='
-  assert_contains "S20 job lookup matches stopped children" "$body" '$3 ~ /^T/'
-  assert_contains "S20 stopped-job match uses configured binary basename" "$body" 'bname="${ZOM_BINARY##*/}"'
-  assert_contains "S20 jobs read in current shell" "$body" 'jobs -l >"$tmp"'
-  assert_not_contains "S20 no command substitution on jobs" "$body" '$(jobs'
+t_S20_widget_always_cold_start() {
+  # Hiding mini is a clean exit in the zom fork (no suspend, no stopped
+  # job), so C-x at the shell always cold-starts and replays the session
+  # from the server. The widget must contain no job-table machinery at all:
+  # widget-launched jobs carry no command text (zsh records nothing for
+  # commands exec'd inside ZLE widgets, so %?str never matches), zsh job
+  # tables are invisible inside $(…) subshells, and a stopped mini holds
+  # its pane hostage (terminal kill confirmation). Structural check — the
+  # real keystroke→ZLE→launch loop is declared NOT automated (see header
+  # boundary).
   local widget
   widget=$(awk '/^__zom_mini_widget\(\)/{f=1} f{print} f && /^}/{exit}' "$PLUGIN")
-  assert_contains "S20 widget resumes via job spec" "$widget" 'fg "$job"'
-  if [[ "$widget" == *'%?'* ]]; then
-    bad "S20 widget free of %? matching" "found %? — it cannot match widget-launched jobs"
+  assert_contains "S20 widget launches mini" "$widget" '__zom_launch_mini || true'
+  if [[ "$widget" == *'fg '* || "$widget" == *'jobs '* || "$widget" == *'%?'* ]]; then
+    bad "S20 widget free of job machinery" "found fg/jobs/%? — hiding is a clean exit, nothing to resume"
   else
-    ok "S20 widget free of %? matching"
+    ok "S20 widget free of job machinery"
+  fi
+  if grep -q '__zom_stopped_mini_job' "$PLUGIN"; then
+    bad "S20 stopped-job helper deleted" "__zom_stopped_mini_job still present"
+  else
+    ok "S20 stopped-job helper deleted"
   fi
 }
 
@@ -587,7 +586,7 @@ for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
          t_S12_err_return_survival t_S13_broken_config t_S14_concurrent_append \
          t_S15_zom_last_empty t_S16_outbox_cursor t_S16_outbox_malformed t_S17_zom_bg \
-         t_S18_zom_config t_S19_agent_md_frontmatter t_S20_widget_toggle_fg t_S21_resource_idempotent \
+         t_S18_zom_config t_S19_agent_md_frontmatter t_S20_widget_always_cold_start t_S21_resource_idempotent \
          t_S22_argv_probe; do
   print -r -- "[$t]"
   $t

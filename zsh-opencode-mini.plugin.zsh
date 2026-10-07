@@ -503,40 +503,6 @@ __zom_launch_mini() {
   "$ZOM_BINARY" "${ZOM_ARGV[@]}"
 }
 
-# Find a stopped mini job of THIS shell and store its zsh job spec ("%N") in
-# ZOM_STOPPED_JOB (empty when none). The out-param is a caller-local — the
-# widget below declares and owns it; zsh dynamic scoping carries the binding
-# here. Widget-launched jobs carry no command
-# text — zsh only records the command line being parsed, and a ZLE widget
-# runs outside the parser — so "%?string" matching never sees them and must
-# not be used. Match by pid instead: a stopped direct child of this shell
-# running the zom binary. zom-bg jobs (`opencode-zom run … &`) also match;
-# resuming one merely lets it continue, which is acceptable.
-#
-# Current-shell discipline: zsh job tables are invisible inside $(…)
-# subshells, so jobs -l is redirected to a file and read back — no command
-# substitution around jobs output, ever. The function must be called
-# directly, never via $(...).
-__zom_stopped_mini_job() {
-  ZOM_STOPPED_JOB=""
-  local tmp="$TMPPREFIX-stopped-job.$$"
-  { jobs -l >"$tmp"; } 2>/dev/null || return 0
-  local line pid jnum
-  for pid in $(ps -axo pid=,ppid=,stat=,comm= 2>/dev/null \
-    | awk -v shell="$$" -v bname="${ZOM_BINARY##*/}" '$2 == shell && $3 ~ /^T/ && substr($4, length($4) - length(bname) + 1) == bname {print $1}' \
-    | sort -rn); do
-    while IFS= read -r line; do
-      [[ "$line" == *\ $pid\ * ]] || continue
-      jnum=${${line#\[}%%]*}
-      if [[ -n "$jnum" ]]; then
-        ZOM_STOPPED_JOB="%$jnum"
-        break 2
-      fi
-    done <"$tmp"
-  done
-  command rm -f "$tmp"
-}
-
 # ZLE widget: pause the line editor (zle -I), run the fullscreen TUI,
 # then repaint the prompt.
 __zom_mini_widget() {
@@ -545,19 +511,12 @@ __zom_mini_widget() {
   # cursor past column 0; zle -I leaves the cursor at the prompt column.
   # Emit a newline so mini starts on a fresh line (same as a direct command).
   print -- ""
-  # Toggle: when a previous C-x / ctrl+z hid mini as a stopped job, resume
-  # that same process in place (same session, same screen) instead of
-  # launching a fresh one. No such job → launch normally.
-  local ZOM_STOPPED_JOB="" job
-  __zom_stopped_mini_job
-  job=$ZOM_STOPPED_JOB
-  if [[ -n "$job" ]] && fg "$job" 2>/dev/null; then
-    :
-  else
-    # A keypress must survive an err_return zshrc; the failure printed its
-    # own stderr, so the return value carries nothing new.
-    __zom_launch_mini || true
-  fi
+  # Always cold-start: hiding mini is a clean exit (no stopped job exists),
+  # and the session lives on the server, so a fresh process replays it. No
+  # job-table lookups, no fg.
+  # A keypress must survive an err_return zshrc; the failure printed its
+  # own stderr, so the return value carries nothing new.
+  __zom_launch_mini || true
   # Passthrough replay: mini exited on a key it does not handle and left the
   # raw bytes in the passthrough file. Push them into ZLE so the key takes
   # effect at the shell prompt instead of being lost.

@@ -29,7 +29,7 @@
     "replayLimit": 50,
     // opencode binary mini launches. Default "opencode-zom": the zom fork
     // installed by scripts/install-zom-binary.sh (inline scrollback on resume,
-    // ctrl+z suspend, key passthrough). Missing binary fails loudly at launch;
+    // key passthrough). Missing binary fails loudly at launch;
     // there is no silent fallback to the official binary (it clears the screen
     // on resume). Pin an absolute path to use a specific build.
     "binary": null,

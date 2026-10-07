@@ -45,7 +45,7 @@ Requires: `opencode` (latest v2), `jq`, `base64`.
 | Key / command | What it does |
 |---|---|
 | `C-x` | open/close the AI mini session (`ses_zom-main`, cwd-aware with the companion binary) |
-| `ctrl+z` (in mini) | suspend back to the shell; resume later with `C-x` |
+| `ctrl+z` (in mini) | quit mini cleanly — same as hiding with `C-x`; summon again with `C-x` |
 | other unbound keys (in mini) | handed back to the shell — e.g. `ctrl+o` runs at the zsh prompt |
 | `zom [args]` | scriptable launcher |
 | `zom-last` | send the last failed command to `opencode run` |
@@ -68,7 +68,7 @@ Optional. Copy [`config.example.jsonc`](config.example.jsonc) to
 | `shell.dataDir` | `~/.local/share/zsh-opencode-mini` | history / failure signal / outbox store (`~` allowed) |
 | `shell.resume` | `"main"` | `"main"` = one dedicated session; `"off"` = fresh each time |
 | `shell.replay` / `replayLimit` | `"on"` / `50` | messages redrawn on reopen (`"off"` = none) |
-| `shell.binary` | `"opencode-zom"` | mini launcher binary; default is the zom fork installed by `scripts/install-zom-binary.sh` (official builds lack inline resume / suspend / passthrough and are not fallen back to silently) |
+| `shell.binary` | `"opencode-zom"` | mini launcher binary; default is the zom fork installed by `scripts/install-zom-binary.sh` (official builds lack inline resume / passthrough and are not fallen back to silently) |
 | `shell.passthrough` | `"on"` | unbound keys go back to the shell instead of being swallowed |
 | `shell.failurePrefill` | built-in | template pre-filled after a failure (`{cmd}` `{exit}` `{cwd}`; `"off"` disables) |
 | `companion.failureTtlSeconds` | `600` | how long a failure stays "fresh" for the AI |

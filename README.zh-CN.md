@@ -41,7 +41,7 @@ use = ["zsh-opencode-mini.plugin.zsh"]
 | 按键 / 命令 | 作用 |
 |---|---|
 | `C-x` | 打开/关闭 AI mini 会话（`ses_zom-main`，配自建二进制可感知目录） |
-| `ctrl+z`（mini 内） | 挂起回 shell；之后 `C-x` 接着用 |
+| `ctrl+z`（mini 内） | 干净退出 mini——与 `C-x` 收起同一条路径；再按 `C-x` 召回 |
 | 其它未绑定键（mini 内） | 交还 shell 生效——比如 `ctrl+o` 落到 zsh 提示符执行 |
 | `zom [args]` | 脚本可用的启动器 |
 | `zom-last` | 把最近失败的命令交给 `opencode run` |
@@ -63,7 +63,7 @@ use = ["zsh-opencode-mini.plugin.zsh"]
 | `shell.dataDir` | `~/.local/share/zsh-opencode-mini` | 历史 / 失败信号 / outbox 存储（允许 `~`） |
 | `shell.resume` | `"main"` | `"main"`=专属会话；`"off"`=每次全新 |
 | `shell.replay` / `replayLimit` | `"on"` / `50` | 重开时回放的消息量（`"off"`=不回放） |
-| `shell.binary` | `"opencode-zom"` | mini 启动用的二进制；默认是 `scripts/install-zom-binary.sh` 装的 zom fork（官方构建没有 inline resume/挂起/透传，缺了会报错而不会静默回落） |
+| `shell.binary` | `"opencode-zom"` | mini 启动用的二进制；默认是 `scripts/install-zom-binary.sh` 装的 zom fork（官方构建没有 inline resume/透传，缺了会报错而不会静默回落） |
 | `shell.passthrough` | `"on"` | 未绑定键交还 shell，而不是吞掉 |
 | `shell.failurePrefill` | 内置模板 | 失败后预填的模板（`{cmd}` `{exit}` `{cwd}`；`"off"` 关闭） |
 | `companion.failureTtlSeconds` | `600` | 失败信号对 AI 保持「新鲜」的秒数 |
