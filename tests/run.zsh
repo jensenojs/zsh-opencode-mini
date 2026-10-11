@@ -66,6 +66,7 @@ assert_eq() { [[ "$2" == "$3" ]] && ok "$1" || bad "$1" "expected [$3], got [$2]
 assert_contains() { [[ "$2" == *"$3"* ]] && ok "$1" || bad "$1" "[$2] lacks [$3]" }
 assert_not_contains() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1" "[$2] unexpectedly contains [$3]" }
 assert_file_exists() { [[ -f "$1" ]] && ok "$2" || bad "$2" "missing file $1" }
+assert_file_missing() { [[ ! -f "$1" ]] && ok "$2" || bad "$2" "file unexpectedly exists: $1" }
 
 # fresh sandbox per scenario: HOME + XDG dirs inside a temp tree
 sandbox() {
@@ -127,10 +128,17 @@ t_S3_failure_signal() {
   cmd=$(jq -r '.cmd' "$f"); exit=$(jq -r '.exit' "$f")
   assert_eq "S3 recorded failing cmd" "$cmd" "false-cmd"
   assert_eq "S3 recorded exit"        "$exit" "1"
-  local before
-  before=$(cat "$f")
+  # New semantics (cwd-scoped global-latest): a succeeding command flushes
+  # the failure signal, and signal exits (141 SIGPIPE / 130 SIGINT) are not
+  # recorded as failures at all.
   run_command 'true-cmd' 'true'
-  assert_eq "S3 zero-exit leaves signal" "$(cat "$f")" "$before"
+  assert_file_missing "$f" "S3 zero-exit flushes signal"
+  run_command 'sigpipe-cmd' '(exit 141)'
+  assert_file_missing "$f" "S3 exit 141 not recorded"
+  run_command 'sigint-cmd'  '(exit 130)'
+  assert_file_missing "$f" "S3 exit 130 not recorded"
+  run_command 'false-cmd' 'false'
+  assert_file_exists "$f" "S3 real failure still recorded"
   assert_eq "S3 no .tmp leftover" "$(ls "$DD" | grep -c tmp || true)" "0"
   cleanup
 }
@@ -198,6 +206,13 @@ EOF
   log=$(cat "$ZOM_MOCK_LOG")
   assert_contains "S6 fresh failure prefills composer" "$log" "--prefill"
   assert_contains "S6 prefill carries the failed command" "$log" "git push --force"
+  cleanup
+  sandbox
+  run_command 'git push --force' 'false'   # failure recorded in sandbox cwd
+  # Same failure signal observed from another directory: no prefill there.
+  run_zsh 'cd /; zom extra-arg' >/dev/null 2>&1
+  log=$(cat "$ZOM_MOCK_LOG")
+  assert_not_contains "S6 failure in other cwd does not prefill" "$log" "--prefill"
   cleanup
   sandbox
   run_command 'git push --force' 'false'

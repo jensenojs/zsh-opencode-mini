@@ -83,7 +83,7 @@ typeset -gA ZOM_DEFAULTS=(
   [replay]="on"
   [replayLimit]="50"
   [passthrough]="on"
-  [failurePrefill]='上一条命令失败了（exit {exit}）：{cmd}\n帮我分析失败原因并给出修复建议'
+  [failurePrefill]=$'上一条命令失败了（exit {exit}）：{cmd}\n帮我分析失败原因并给出修复建议'
   [model]=""
   [failureTtlSeconds]="600"
   [recentDefaultN]="20"
@@ -278,11 +278,19 @@ __zom_precmd() {
 
   # 2) Non-zero exit -> atomically refresh the failure signal file
   #    (the opencode-side plugin checks this file against its TTL)
-  if (( exit_code != 0 )); then
+  #    141 (SIGPIPE) and 130 (SIGINT) are excluded: a pipe consumer exiting
+  #    early (`git log | head`) or the user interrupting with Ctrl-C are
+  #    normal interactions, not failures worth prefilling a repair prompt for.
+  if (( exit_code != 0 && exit_code != 141 && exit_code != 130 )); then
     printf '{"ts":"%s","epoch":%d,"cwd":"%s","exit":%d,"cmd":"%s"}\n' \
       "$ts" "$EPOCHSECONDS" "$(__zom_json_escape "$PWD")" "$exit_code" "$(__zom_json_escape "$cmd")" \
       > "$ZOM_DATA_DIR/last-failure.json.tmp" \
       && mv "$ZOM_DATA_DIR/last-failure.json.tmp" "$ZOM_DATA_DIR/last-failure.json"
+  elif (( exit_code == 0 )) && [[ -f "$ZOM_DATA_DIR/last-failure.json" ]]; then
+    # "last command failed" must mean THE last command: any later successful
+    # command (in any pane — the store is intentionally global-latest) flushes
+    # the stale signal, so a new pane never inherits an old failure.
+    command rm -f "$ZOM_DATA_DIR/last-failure.json"
   fi
 
   # 3) Deliver outbox records that arrived while the command ran (see
@@ -404,14 +412,18 @@ __zom_failure_prefill() {
   [[ -n "$ZOM_FAILURE_PREFILL_TMPL" ]] || return 1
   local f="$ZOM_DATA_DIR/last-failure.json"
   [[ -f "$f" ]] || return 1
-  local info
+  local info cwd
   info=$(jq -r '[.epoch // 0, .exit // "?", .cmd // ""] | @tsv' "$f" 2>/dev/null) || return 1
+  cwd=$(jq -r '.cwd // ""' "$f" 2>/dev/null) || return 1
   local epoch exit_code cmd
   epoch=${info[(w)1]}
   exit_code=${info[(w)2]}
   cmd=${info[(w)3,-1]}
   [[ "$epoch" == <-> ]] || return 1
   (( EPOCHSECONDS - epoch <= ZOM_FAILURE_TTL )) || return 1
+  # Directory match: a failure observed in another working directory must not
+  # surface here, even inside the TTL window (different project, different bug).
+  [[ "$cwd" == "$PWD" ]] || return 1
   local out=${ZOM_FAILURE_PREFILL_TMPL//\{cmd\}/$cmd}
   out=${out//\{exit\}/$exit_code}
   out=${out//\{cwd\}/$PWD}
