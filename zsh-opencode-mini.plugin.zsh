@@ -658,7 +658,10 @@ if [[ -n "$ZOM_KEYBIND" ]]; then
   }
   if (( $+widgets )); then
     __zom_bind "$ZOM_KEYBIND"
-    [[ "$(bindkey "$ZOM_KEYBIND" 2>/dev/null)" == *'__zom_mini_widget'* ]] && __zom_keybind_conflict
+    # The prefix-conflict report runs only from __zom_ensure_bind (first
+    # prompt): KEYTIMEOUT and the keymap are final there, while at source
+    # time the user rc has usually not set KEYTIMEOUT yet and the reported
+    # cost would be wrong.
   fi
 
   # Lazy bind: first prompt = post-zshrc, deferred plugins done, final keymap.
