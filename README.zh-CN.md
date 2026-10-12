@@ -60,6 +60,7 @@ use = ["zsh-opencode-mini.plugin.zsh"]
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `shell.keybind` | `"^X"` | 唤起键；`"off"` 关闭 |
+| `shell.keybindConflict` | `"notify"` | 与唤起键共享前缀的序列（zsh emacs 表自带的 `"^X…"` 族）让每次裸按多等一个 KEYTIMEOUT。`"notify"` 启动时警告一次并列出被遮蔽的序列；`"strip"` 移除它们（`bindkey -rp`）并大声宣布；`"off"` 保持沉默 |
 | `shell.dataDir` | `~/.local/share/zsh-opencode-mini` | 历史 / 失败信号 / outbox 存储（允许 `~`） |
 | `shell.resume` | `"main"` | `"main"`=专属会话；`"off"`=每次全新 |
 | `shell.replay` / `replayLimit` | `"on"` / `50` | 重开时回放的消息量（`"off"`=不回放） |

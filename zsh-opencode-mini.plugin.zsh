@@ -32,6 +32,7 @@ __zom_cfg_load() {
   # key) is impossible even when jq itself is unavailable.
   local -r empty='ZOM_CFG[binary]=""
     ZOM_CFG[keybind]=""
+    ZOM_CFG[keybindConflict]=""
     ZOM_CFG[dataDir]=""
     ZOM_CFG[resume]=""
     ZOM_CFG[replay]=""
@@ -48,6 +49,7 @@ __zom_cfg_load() {
   local -r q='.shell as $s |
     "ZOM_CFG[binary]="            + (($s.binary         // "") | @sh),
     "ZOM_CFG[keybind]="           + (($s.keybind        // "") | @sh),
+    "ZOM_CFG[keybindConflict]="   + (($s.keybindConflict // "") | @sh),
     "ZOM_CFG[dataDir]="           + (($s.dataDir        // "") | @sh),
     "ZOM_CFG[resume]="            + (($s.resume         // "") | @sh),
     "ZOM_CFG[replay]="            + (($s.replay         // "") | @sh),
@@ -78,6 +80,7 @@ __zom_cfg_load() {
 typeset -gA ZOM_DEFAULTS=(
   [binary]="opencode-zom"
   [keybind]="^X"
+  [keybindConflict]="notify"
   [dataDir]="${XDG_DATA_HOME:-$HOME/.local/share}/zsh-opencode-mini"
   [resume]="main"
   [replay]="on"
@@ -104,6 +107,23 @@ ZOM_KEYBIND=${ZOM_CFG[keybind]}
 case "$ZOM_KEYBIND" in
   "" | null) ZOM_KEYBIND="${ZOM_DEFAULTS[keybind]}" ;;   # absent from config -> default
   off)       ZOM_KEYBIND=""  ;;   # explicit disable
+esac
+
+# Summon-key prefix conflict. If other bindings in the keymap start with the
+# summon key (zsh's emacs map ships a "^X…" sequence family: ^X^U undo,
+# ^Xr/^Xs history search, …), zsh cannot know on the first byte whether you
+# mean the bare key or a sequence, so a bare press waits KEYTIMEOUT before it
+# dispatches — the summon costs ~KEYTIMEOUT more than any plain key.
+#   notify (default)  one-time warning naming what is shadowed and the price
+#   strip             remove the shadowing sequences (bindkey -rp), loudly
+#   off               stay silent
+ZOM_KEYBIND_CONFLICT=${ZOM_CFG[keybindConflict]}
+case "$ZOM_KEYBIND_CONFLICT" in
+  "" | null) ZOM_KEYBIND_CONFLICT="${ZOM_DEFAULTS[keybindConflict]}" ;;
+  notify | strip | off) : ;;
+  *)
+    print -u2 -- "zsh-opencode-mini: shell.keybindConflict '$ZOM_KEYBIND_CONFLICT' invalid (notify|strip|off) — using ${ZOM_DEFAULTS[keybindConflict]}."
+    ZOM_KEYBIND_CONFLICT="${ZOM_DEFAULTS[keybindConflict]}" ;;
 esac
 
 # Which session C-x resumes. "main" (default): one dedicated assistant session
@@ -575,6 +595,49 @@ if [[ -n "$ZOM_KEYBIND" ]]; then
   # verifies against the live keymap at each prompt and rebinds until the bind
   # sticks in its final keymap. ZOM_BIND_DONE: 0=trying 2=user-occupied.
   if (( ! $+ZOM_BIND_DONE )); then typeset -g ZOM_BIND_DONE=0; fi
+  # Once the summon key reads back as ours, surface the sequence-prefix
+  # conflict once per shell (see shell.keybindConflict above). `bindkey -M
+  # main -L` prints the main keymap's bindings as bindkey commands (note:
+  # `-lL` only lists keymap creation lines, not the bindings inside); a
+  # binding strictly extending the summon key is a sequence zsh must
+  # disambiguate against on every press.
+  if (( ! $+ZOM_CONFLICT_DONE )); then typeset -g ZOM_CONFLICT_DONE=0; fi
+  __zom_keybind_conflict() {
+    (( ZOM_CONFLICT_DONE )) && return 0
+    ZOM_CONFLICT_DONE=1
+    [[ "$ZOM_KEYBIND_CONFLICT" == off ]] && return 0
+    local line key name kt
+    local -a hits
+    while IFS= read -r line; do
+      [[ "$line" == 'bindkey "'* ]] || continue
+      key=${line#*\"}; key=${key%%\"*}
+      name=${line##*\" }; name=${name%\"}
+      if [[ "$key" != "$ZOM_KEYBIND" && "$key" == "$ZOM_KEYBIND"* ]]; then
+        hits+=("\"$key\" ${name:-<undefined>}")
+      fi
+    done <<< "$(bindkey -M main -L 2>/dev/null || bindkey -L)"
+    local n=${#hits}
+    (( n )) || return 0
+    local samples="${(j:, :)hits[1,3]}"
+    (( n > 3 )) && samples="$samples …(+$(( n - 3 )) more)"
+    kt=${KEYTIMEOUT:-40}   # centiseconds, zsh default 40
+    if [[ "$ZOM_KEYBIND_CONFLICT" == strip ]]; then
+      bindkey -rp "$ZOM_KEYBIND"
+      # -rp should keep the exact binding; re-verify and restore if not.
+      if ! [[ "$(bindkey "$ZOM_KEYBIND" 2>/dev/null)" == *'__zom_mini_widget'* ]]; then
+        zle -N __zom_mini_widget
+        bindkey "$ZOM_KEYBIND" __zom_mini_widget
+      fi
+      print -u2 -- "zsh-opencode-mini: removed $n sequence binding(s) prefixed by \"$ZOM_KEYBIND\" — $samples."
+      print -u2 -- "zsh-opencode-mini: shell.keybindConflict=strip — a bare key now dispatches immediately (they were: zsh's emacs-mode sequence defaults)."
+    else
+      print -u2 -- "zsh-opencode-mini: \"$ZOM_KEYBIND\" also prefixes $n keymap sequence(s) — $samples."
+      kt="$(printf '%d.%02ds' $(( kt / 100 )) $(( kt % 100 )))"
+      print -u2 -- "zsh-opencode-mini: a bare \"$ZOM_KEYBIND\" press waits KEYTIMEOUT ($kt) before zsh dispatches it — the summon is that much slower."
+      print -u2 -- "zsh-opencode-mini: trade-off is yours: keep the sequences (do nothing), set shell.keybindConflict=\"strip\" in $ZOM_CONFIG, add 'bindkey -rp \"$ZOM_KEYBIND\"' after loading this plugin, or lower KEYTIMEOUT."
+    fi
+    return 0
+  }
   __zom_bind() {
     local seq="$1" current
     current=$(bindkey "$seq" 2>/dev/null)
@@ -595,6 +658,7 @@ if [[ -n "$ZOM_KEYBIND" ]]; then
   }
   if (( $+widgets )); then
     __zom_bind "$ZOM_KEYBIND"
+    [[ "$(bindkey "$ZOM_KEYBIND" 2>/dev/null)" == *'__zom_mini_widget'* ]] && __zom_keybind_conflict
   fi
 
   # Lazy bind: first prompt = post-zshrc, deferred plugins done, final keymap.
@@ -610,12 +674,14 @@ if [[ -n "$ZOM_KEYBIND" ]]; then
     current=$(bindkey "$ZOM_KEYBIND" 2>/dev/null)
     if [[ "$current" == *'__zom_mini_widget'* ]]; then
       add-zsh-hook -d precmd __zom_ensure_bind
+      __zom_keybind_conflict
       return 0
     fi
     __zom_bind "$ZOM_KEYBIND"
     current=$(bindkey "$ZOM_KEYBIND" 2>/dev/null)
     if [[ "$current" == *'__zom_mini_widget'* ]]; then
       add-zsh-hook -d precmd __zom_ensure_bind
+      __zom_keybind_conflict
     fi
     return 0
   }
@@ -650,6 +716,7 @@ zom-config() {
   print -r -- "shell (read once when the plugin loads; open a new shell to apply edits):"
   __zom_cfg_line binary         "$ZOM_BINARY"
   __zom_cfg_line keybind        "$ZOM_KEYBIND"
+  __zom_cfg_line keybindConflict "$ZOM_KEYBIND_CONFLICT"
   __zom_cfg_line dataDir        "$ZOM_DATA_DIR"
   __zom_cfg_line resume         "$ZOM_RESUME"
   __zom_cfg_line replay         "$ZOM_REPLAY"

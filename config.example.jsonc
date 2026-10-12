@@ -14,6 +14,12 @@
     // Key to summon opencode mini ("^X" by default; "off" disables the
     // binding — an empty string is reserved and means default).
     "keybind": "^X",
+    // Other sequences starting with the summon key (zsh's emacs map ships a
+    // "^X…" family) make zsh wait KEYTIMEOUT on every bare press:
+    //   "notify" (default) one-time warning naming what is shadowed
+    //   "strip"  remove those sequences (bindkey -rp), announced loudly
+    //   "off"    stay silent
+    "keybindConflict": "notify",
     // Which session C-x resumes:
     //   "main" (default) — one dedicated assistant session (ses_zom-main),
     //                      isolated from your other opencode sessions
