@@ -15,9 +15,11 @@
     // binding — an empty string is reserved and means default).
     "keybind": "^X",
     // Other sequences starting with the summon key (zsh's emacs map ships a
-    // "^X…" family) make zsh wait KEYTIMEOUT on every bare press:
+    // "^X…" family) make zsh wait KEYTIMEOUT on every bare press. The plugin
+    // only reports them; to remove them, add e.g. bindkey -rp "<summon key>"
+    // to your
+    // own zshrc after this plugin loads.
     //   "notify" (default) one-time warning naming what is shadowed
-    //   "strip"  remove those sequences (bindkey -rp), announced loudly
     //   "off"    stay silent
     "keybindConflict": "notify",
     // Which session C-x resumes:

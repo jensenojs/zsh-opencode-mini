@@ -598,9 +598,10 @@ t_S22_argv_probe() {
 
 t_S23_sequence_conflict() {
   # keybindConflict (shell.*): sequences sharing the summon-key prefix force
-  # zsh to wait KEYTIMEOUT on every bare press. Default notify names them;
-  # strip removes them loudly; off stays silent; bad values warn and fall
-  # back to notify; the check runs once per shell. The check is invoked by
+  # zsh to wait KEYTIMEOUT on every bare press. Default notify names them and
+  # how to remove them in the user's own rc (the plugin reports only, it
+  # never edits the keymap); off stays silent; bad values warn and fall back
+  # to notify; the check runs once per shell. The check is invoked by
   # __zom_ensure_bind on the first prompt; tests call it directly (zsh -c
   # has no precmd), which is the same function and the same state.
   local setup="bindkey -e; KEYTIMEOUT=100; bindkey '^Xs' history-incremental-search-forward; bindkey '^X^U' undo"
@@ -612,13 +613,10 @@ t_S23_sequence_conflict() {
   assert_contains "S23 notify lists sequences"  "$out" 'also prefixes'
   assert_contains "S23 notify names a hit"      "$out" '"^X^B" vi-match-bracket'
   assert_contains "S23 notify prices the cost"  "$out" 'KEYTIMEOUT (1.00s)'
-
-  mk '{"shell":{"keybindConflict":"strip"}}'
-  out=$(HOME="$H" XDG_CONFIG_HOME="$H/.config" zsh -f -c "$setup; source '$PLUGIN'; __zom_keybind_conflict; print -r -- \"left=\$(bindkey '^Xs')\"; print -r -- \"widget=\$(bindkey '^X')\"" 2>&1)
-  assert_contains "S23 strip announces"        "$out" 'keybindConflict=strip'
-  assert_contains "S23 strip removed sequence" "$out" 'left='
-  assert_not_contains "S23 sequence gone"      "$out" 'history-incremental-search-forward'
-  assert_contains "S23 widget kept"            "$out" '__zom_mini_widget'
+  assert_contains "S23 notify names the fix"    "$out" 'bindkey -rp "^X"'
+  # the plugin edits no keymap: the shadowing sequences survive the report
+  out=$(HOME="$H" XDG_CONFIG_HOME="$H/.config" zsh -f -c "$setup; source '$PLUGIN'; __zom_keybind_conflict; bindkey '^Xs'" 2>&1)
+  assert_contains "S23 keymap untouched" "$out" 'history-incremental-search-forward'
 
   mk '{"shell":{"keybindConflict":"off"}}'
   out=$(HOME="$H" XDG_CONFIG_HOME="$H/.config" zsh -f -c "$setup; source '$PLUGIN'; __zom_keybind_conflict" 2>&1)
@@ -626,7 +624,7 @@ t_S23_sequence_conflict() {
 
   mk '{"shell":{"keybindConflict":"wat"}}'
   out=$(HOME="$H" XDG_CONFIG_HOME="$H/.config" zsh -f -c "source '$PLUGIN'" 2>&1)
-  assert_contains "S23 invalid warns"    "$out" "keybindConflict 'wat' invalid"
+  assert_contains "S23 invalid warns"    "$out" "keybindConflict 'wat' invalid (notify|off)"
 
   # once per shell: repeated calls print nothing more
   mk '{"shell":{"keybindConflict":"notify"}}'

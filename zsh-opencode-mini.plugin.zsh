@@ -114,15 +114,16 @@ esac
 # ^Xr/^Xs history search, …), zsh cannot know on the first byte whether you
 # mean the bare key or a sequence, so a bare press waits KEYTIMEOUT before it
 # dispatches — the summon costs ~KEYTIMEOUT more than any plain key.
+# The plugin reports only; removing the sequences (bindkey -rp) belongs in
+# the user's own rc.
 #   notify (default)  one-time warning naming what is shadowed and the price
-#   strip             remove the shadowing sequences (bindkey -rp), loudly
 #   off               stay silent
 ZOM_KEYBIND_CONFLICT=${ZOM_CFG[keybindConflict]}
 case "$ZOM_KEYBIND_CONFLICT" in
   "" | null) ZOM_KEYBIND_CONFLICT="${ZOM_DEFAULTS[keybindConflict]}" ;;
-  notify | strip | off) : ;;
+  notify | off) : ;;
   *)
-    print -u2 -- "zsh-opencode-mini: shell.keybindConflict '$ZOM_KEYBIND_CONFLICT' invalid (notify|strip|off) — using ${ZOM_DEFAULTS[keybindConflict]}."
+    print -u2 -- "zsh-opencode-mini: shell.keybindConflict '$ZOM_KEYBIND_CONFLICT' invalid (notify|off) — using ${ZOM_DEFAULTS[keybindConflict]}."
     ZOM_KEYBIND_CONFLICT="${ZOM_DEFAULTS[keybindConflict]}" ;;
 esac
 
@@ -620,22 +621,13 @@ if [[ -n "$ZOM_KEYBIND" ]]; then
     (( n )) || return 0
     local samples="${(j:, :)hits[1,3]}"
     (( n > 3 )) && samples="$samples …(+$(( n - 3 )) more)"
+    # Report only. Removing the sequences is a keymap change; that belongs in
+    # the user's own rc (bindkey -rp), not in a plugin they load indirectly.
+    print -u2 -- "zsh-opencode-mini: \"$ZOM_KEYBIND\" also prefixes $n keymap sequence(s) — $samples."
     kt=${KEYTIMEOUT:-40}   # centiseconds, zsh default 40
-    if [[ "$ZOM_KEYBIND_CONFLICT" == strip ]]; then
-      bindkey -rp "$ZOM_KEYBIND"
-      # -rp should keep the exact binding; re-verify and restore if not.
-      if ! [[ "$(bindkey "$ZOM_KEYBIND" 2>/dev/null)" == *'__zom_mini_widget'* ]]; then
-        zle -N __zom_mini_widget
-        bindkey "$ZOM_KEYBIND" __zom_mini_widget
-      fi
-      print -u2 -- "zsh-opencode-mini: removed $n sequence binding(s) prefixed by \"$ZOM_KEYBIND\" — $samples."
-      print -u2 -- "zsh-opencode-mini: shell.keybindConflict=strip — a bare key now dispatches immediately (they were: zsh's emacs-mode sequence defaults)."
-    else
-      print -u2 -- "zsh-opencode-mini: \"$ZOM_KEYBIND\" also prefixes $n keymap sequence(s) — $samples."
-      kt="$(printf '%d.%02ds' $(( kt / 100 )) $(( kt % 100 )))"
-      print -u2 -- "zsh-opencode-mini: a bare \"$ZOM_KEYBIND\" press waits KEYTIMEOUT ($kt) before zsh dispatches it — the summon is that much slower."
-      print -u2 -- "zsh-opencode-mini: trade-off is yours: keep the sequences (do nothing), set shell.keybindConflict=\"strip\" in $ZOM_CONFIG, add 'bindkey -rp \"$ZOM_KEYBIND\"' after loading this plugin, or lower KEYTIMEOUT."
-    fi
+    kt="$(printf '%d.%02ds' $(( kt / 100 )) $(( kt % 100 )))"
+    print -u2 -- "zsh-opencode-mini: a bare \"$ZOM_KEYBIND\" press waits KEYTIMEOUT ($kt) before zsh dispatches it — the summon is that much slower."
+    print -u2 -- "zsh-opencode-mini: to drop them, add 'bindkey -rp \"$ZOM_KEYBIND\"' to your zshrc after this plugin loads; or lower KEYTIMEOUT to shrink the wait."
     return 0
   }
   __zom_bind() {

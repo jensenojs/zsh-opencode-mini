@@ -65,7 +65,7 @@ Optional. Copy [`config.example.jsonc`](config.example.jsonc) to
 | Key | Default | Meaning |
 |---|---|---|
 | `shell.keybind` | `"^X"` | summon key; `"off"` disables |
-| `shell.keybindConflict` | `"notify"` | other sequences sharing the summon prefix (zsh's default `"^X…"` family) cost one KEYTIMEOUT on every bare press. `"notify"` warns once naming them; `"strip"` removes them (`bindkey -rp`), loudly; `"off"` stays silent |
+| `shell.keybindConflict` | `"notify"` | other sequences sharing the summon-key prefix (zsh's emacs map ships a `"^X…"` family under the default `"^X"` summon key) cost one KEYTIMEOUT on every bare press. `"notify"` warns once naming the shadowed sequences and the removal for your own zshrc (`bindkey -rp "<summon key>"`); `"off"` stays silent. The plugin reports only — it never edits your keymap |
 | `shell.dataDir` | `~/.local/share/zsh-opencode-mini` | history / failure signal / outbox store (`~` allowed) |
 | `shell.resume` | `"main"` | `"main"` = one dedicated session; `"off"` = fresh each time |
 | `shell.replay` / `replayLimit` | `"on"` / `50` | messages redrawn on reopen (`"off"` = none) |
