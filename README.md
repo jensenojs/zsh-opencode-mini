@@ -70,7 +70,8 @@ Optional. Copy [`config.example.jsonc`](config.example.jsonc) to
 | `shell.resume` | `"main"` | `"main"` = one dedicated session; `"off"` = fresh each time |
 | `shell.replay` / `replayLimit` | `"on"` / `50` | messages redrawn on reopen (`"off"` = none) |
 | `shell.binary` | `"opencode-zom"` | mini launcher binary; default is the zom fork installed by `scripts/install-zom-binary.sh` (official builds lack inline resume / passthrough and are not fallen back to silently) |
-| `shell.passthrough` | `"on"` | unbound keys go back to the shell instead of being swallowed |
+| `shell.passthrough` | `"on"` | unbound keys are logged to `passthrough.<pid>.keys.log` instead of killing mini; `"off"` swallows them |
+| `shell.passthroughKeys` | `""` | comma-separated strokes (e.g. `"ctrl+r"`) that exit mini and replay into the shell |
 | `shell.failurePrefill` | built-in | template pre-filled after a failure (`{cmd}` `{exit}` `{cwd}`; `"off"` disables) |
 | `companion.failureTtlSeconds` | `600` | how long a failure stays "fresh" for the AI |
 | `companion.recentDefaultN` | `20` | lines `zom_context` returns for `query=recent` |

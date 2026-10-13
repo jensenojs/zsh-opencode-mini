@@ -65,7 +65,8 @@ use = ["zsh-opencode-mini.plugin.zsh"]
 | `shell.resume` | `"main"` | `"main"`=专属会话；`"off"`=每次全新 |
 | `shell.replay` / `replayLimit` | `"on"` / `50` | 重开时回放的消息量（`"off"`=不回放） |
 | `shell.binary` | `"opencode-zom"` | mini 启动用的二进制；默认是 `scripts/install-zom-binary.sh` 装的 zom fork（官方构建没有 inline resume/透传，缺了会报错而不会静默回落） |
-| `shell.passthrough` | `"on"` | 未绑定键交还 shell，而不是吞掉 |
+| `shell.passthrough` | `"on"` | 未绑定键写入 `passthrough.<pid>.keys.log`（滚动），mini 不退出；`"off"` 恢复吞掉 |
+| `shell.passthroughKeys` | `""` | 逗号分隔的键位（如 `"ctrl+r"`），命中时退出 mini 并把字节回放给 shell |
 | `shell.failurePrefill` | 内置模板 | 失败后预填的模板（`{cmd}` `{exit}` `{cwd}`；`"off"` 关闭） |
 | `companion.failureTtlSeconds` | `600` | 失败信号对 AI 保持「新鲜」的秒数 |
 | `companion.recentDefaultN` | `20` | `zom_context` 工具 `query=recent` 返回的行数 |

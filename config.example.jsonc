@@ -42,10 +42,14 @@
     // on resume). Pin an absolute path to use a specific build.
     "binary": null,
     // Keys nobody claims inside mini (not a keymap action, not composer
-    // input): "on" (default) has mini hand the key back — it exits and the
-    // widget replays the raw bytes into ZLE, so the key takes effect at the
-    // shell prompt; "off" restores swallowing the key.
+    // input): "on" (default) logs them to <dataDir>/passthrough.<pid>.keys.log
+    // (rolling cap, newest kept) and mini keeps running — an unhandled key
+    // never kills the TUI; "off" restores swallowing the key.
     "passthrough": "on",
+    // Comma-separated strokes that keep the old exit-and-replay behaviour:
+    // mini exits and the widget replays the raw bytes into ZLE, so the key
+    // takes effect at the shell prompt. Example: "ctrl+r".
+    "passthroughKeys": "",
     // Prompt pre-filled (not sent) in the composer after a failed command,
     // within failureTtlSeconds. Placeholders: {cmd} {exit} {cwd}.
     // Omit for the built-in Chinese template; "off" disables the prefill.

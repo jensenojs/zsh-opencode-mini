@@ -639,13 +639,61 @@ t_S23_sequence_conflict() {
   cleanup
 }
 
+t_S24_regression_fixes() {
+  # 1) Numeric validation must work without EXTENDED_GLOB (zsh -f leaves it
+  #    off): a valid replayLimit survives with no warning.
+  sandbox
+  write_config <<<'{ "shell": { "replayLimit": 7 } }'
+  local out
+  out=$(run_zsh 'print -r -- $ZOM_REPLAY_LIMIT' 2>&1)
+  assert_eq "S24 replayLimit honored w/o EXTENDED_GLOB" "$out" "7"
+  cleanup
+
+  # 2) Prefill must preserve runs of spaces/tabs in the failed command
+  #    (jq @tsv escapes inner tabs, so real tabs are field separators only).
+  sandbox
+  mkdir -p "$DD"
+  local spaced='echo  a   b	c'
+  local now=$(date +%s)
+  printf '{"ts":"t","epoch":%d,"cwd":%s,"exit":1,"cmd":%s}\n' \
+    "$now" "$(jq -Rn --arg s "$PWD" '$s')" "$(jq -Rn --arg s "$spaced" '$s')" \
+    > "$DD/last-failure.json"
+  out=$(run_zsh '__zom_failure_prefill')
+  assert_contains "S24 prefill keeps double spaces" "$out" 'echo  a   b'
+  cleanup
+
+  # 3) zom-last applies the same freshness rules as the prefill: stale
+  #    records and failures from another directory are rejected.
+  sandbox
+  mkdir -p "$DD"
+  printf '{"ts":"t","epoch":1,"cwd":%s,"exit":1,"cmd":"old-cmd"}\n' \
+    "$(jq -Rn --arg s "$PWD" '$s')" > "$DD/last-failure.json"
+  out=$(run_zsh 'zom-last' 2>&1) || true
+  assert_contains "S24 zom-last stale rejected" "$out" 'stale'
+  printf '{"ts":"t","epoch":%d,"cwd":"/somewhere/else","exit":1,"cmd":"other-cmd"}\n' \
+    "$now" > "$DD/last-failure.json"
+  out=$(run_zsh 'zom-last' 2>&1) || true
+  assert_contains "S24 zom-last wrong cwd rejected" "$out" 'not here'
+  cleanup
+
+  # 4) Spawn hooks run with stdin reconnected to /dev/tty (a ZLE widget's
+  #    stdin is not a tty; hooks probing the terminal would misfire). In a
+  #    test shell there is no tty at all — the hook must still run and its
+  #    failure must not abort the spawn path.
+  sandbox
+  out=$(run_zsh 'ZOM_SPAWN_HOOKS+=(myhook); myhook() { print -r -- hook-ran; return 1 }; __zom_run_spawn_hooks; print -r -- after')
+  assert_contains "S24 hook ran without tty" "$out" 'hook-ran'
+  assert_contains "S24 hook failure tolerated" "$out" 'after'
+  cleanup
+}
+
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
          t_S12_err_return_survival t_S13_broken_config t_S14_concurrent_append \
          t_S15_zom_last_empty t_S16_outbox_cursor t_S16_outbox_malformed t_S17_zom_bg \
          t_S18_zom_config t_S19_agent_md_frontmatter t_S20_widget_always_cold_start t_S21_resource_idempotent \
-         t_S22_argv_probe t_S23_sequence_conflict; do
+         t_S22_argv_probe t_S23_sequence_conflict t_S24_regression_fixes; do
   print -r -- "[$t]"
   $t
 done

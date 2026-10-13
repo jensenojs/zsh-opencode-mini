@@ -38,6 +38,7 @@ __zom_cfg_load() {
     ZOM_CFG[replay]=""
     ZOM_CFG[replayLimit]=""
     ZOM_CFG[passthrough]=""
+    ZOM_CFG[passthroughKeys]=""
     ZOM_CFG[failurePrefill]=""
     ZOM_CFG[model]=""
     ZOM_CFG[failureTtlSeconds]=""
@@ -55,6 +56,7 @@ __zom_cfg_load() {
     "ZOM_CFG[replay]="            + (($s.replay         // "") | @sh),
     "ZOM_CFG[replayLimit]="       + (($s.replayLimit    // "") | @sh),
     "ZOM_CFG[passthrough]="       + (($s.passthrough    // "") | @sh),
+    "ZOM_CFG[passthroughKeys]="   + (($s.passthroughKeys // "") | @sh),
     "ZOM_CFG[failurePrefill]="    + (($s.failurePrefill // "") | @sh),
     "ZOM_CFG[model]="             + (($s.model          // "") | @sh),
     "ZOM_CFG[failureTtlSeconds]=" + ((.companion.failureTtlSeconds // "") | @sh),
@@ -86,6 +88,7 @@ typeset -gA ZOM_DEFAULTS=(
   [replay]="on"
   [replayLimit]="50"
   [passthrough]="on"
+  [passthroughKeys]=""
   [failurePrefill]=$'上一条命令失败了（exit {exit}）：{cmd}\n帮我分析失败原因并给出修复建议'
   [model]=""
   [failureTtlSeconds]="600"
@@ -164,6 +167,15 @@ fi
 # ZOM_BINARY takes no guard: it is assigned unconditionally above, so it is
 # never readonly and never needs one.
 
+# ---- small predicates ----
+# Unsigned-integer test with no EXTENDED_GLOB dependency: `<->` and `[0-9]##`
+# silently mis-match when the user's zshrc leaves that option off (the stock
+# default), which would route every valid number into the "invalid" branch.
+# A negated bracket class is plain glob and works everywhere.
+__zom_is_uint() {
+  [[ -n "$1" && "$1" != *[!0-9]* ]]
+}
+
 # ---- Internal defaults (not configuration; edit the source if you must) ----
 (( $+ZOM_AGENT )) || typeset -gr ZOM_AGENT="zsh-companion"   # agent name, defined in agent/zsh-companion.md
 (( $+ZOM_MAIN_SESSION )) || typeset -gr ZOM_MAIN_SESSION="ses_zom-main"  # the dedicated assistant session ("resume": "main")
@@ -185,7 +197,7 @@ esac
 ZOM_REPLAY_LIMIT=${ZOM_CFG[replayLimit]}
 if [[ "$ZOM_REPLAY_LIMIT" == "" || "$ZOM_REPLAY_LIMIT" == "null" ]]; then
   ZOM_REPLAY_LIMIT="${ZOM_DEFAULTS[replayLimit]}"   # absent -> default
-elif [[ "$ZOM_REPLAY_LIMIT" != <-> || "$ZOM_REPLAY_LIMIT" -lt 1 ]]; then
+elif ! __zom_is_uint "$ZOM_REPLAY_LIMIT" || [[ "$ZOM_REPLAY_LIMIT" -lt 1 ]]; then
   print -u2 -- "zsh-opencode-mini: shell.replayLimit '$ZOM_REPLAY_LIMIT' invalid (positive integer) — using ${ZOM_DEFAULTS[replayLimit]}."
   ZOM_REPLAY_LIMIT="${ZOM_DEFAULTS[replayLimit]}"
 fi
@@ -195,16 +207,19 @@ fi
 # plugin, which guards the same last-failure.json signal with the same key.
 ZOM_FAILURE_TTL=${ZOM_CFG[failureTtlSeconds]}
 [[ "$ZOM_FAILURE_TTL" == "" || "$ZOM_FAILURE_TTL" == "null" ]] && ZOM_FAILURE_TTL="${ZOM_DEFAULTS[failureTtlSeconds]}"
-if [[ "$ZOM_FAILURE_TTL" != <-> || "$ZOM_FAILURE_TTL" -lt 1 ]]; then
+if ! __zom_is_uint "$ZOM_FAILURE_TTL" || [[ "$ZOM_FAILURE_TTL" -lt 1 ]]; then
   print -u2 -- "zsh-opencode-mini: companion.failureTtlSeconds '$ZOM_FAILURE_TTL' invalid (positive integer) — using ${ZOM_DEFAULTS[failureTtlSeconds]}."
   ZOM_FAILURE_TTL="${ZOM_DEFAULTS[failureTtlSeconds]}"
 fi
 
 # Key passthrough (default on). When mini sees a key nobody claims (not a
-# keymap action, not composer input), it no longer swallows it: mini writes
-# the raw bytes to ZOM_PASSTHROUGH_FILE and exits; the widget replays them
-# into ZLE, so the key takes effect in the shell. "off" restores the old
-# swallow behaviour.
+# keymap action, not composer input), the fork logs it as a JSON line to
+# $ZOM_PASSTHROUGH_FILE.keys.log (rolling cap, newest kept) and keeps
+# running — an unhandled key must not kill the TUI. Keys listed in
+# shell.passthroughKeys (comma-separated strokes, e.g. "ctrl+r") keep the
+# old exit-and-replay behaviour: mini writes the raw bytes to
+# ZOM_PASSTHROUGH_FILE and exits; the widget replays them into ZLE, so the
+# key takes effect in the shell. "off" restores the old swallow behaviour.
 ZOM_PASSTHROUGH=${ZOM_CFG[passthrough]}
 case "$ZOM_PASSTHROUGH" in
   ""|on) ZOM_PASSTHROUGH="${ZOM_DEFAULTS[passthrough]}" ;;
@@ -215,6 +230,8 @@ case "$ZOM_PASSTHROUGH" in
   ;;
 esac
 ZOM_PASSTHROUGH_FILE="$ZOM_DATA_DIR/passthrough.$$"
+ZOM_PASSTHROUGH_KEYS=${ZOM_CFG[passthroughKeys]}
+[[ "$ZOM_PASSTHROUGH_KEYS" == null ]] && ZOM_PASSTHROUGH_KEYS=""
 
 # Failure→prefill template. Mechanism (TTL check, placeholder substitution)
 # lives here; the wording is policy and lives in the config.
@@ -279,6 +296,11 @@ __zom_precmd() {
   local t0=${__ZOM_T0}
   unset __ZOM_T0 __ZOM_CMD
   [[ -n "$cmd" ]] || return 0
+
+  # If the data dir could not be created (warning already printed at source
+  # time), every redirect below would re-print an error after each command;
+  # skip recording instead. `[[ -d ]]` is a builtin stat, no fork per command.
+  [[ -d "$ZOM_DATA_DIR" ]] || return 0
 
   local elapsed_ms=$(( (EPOCHREALTIME - t0) * 1000 ))
   # A wall-clock step backwards between preexec and precmd makes the duration
@@ -407,16 +429,30 @@ __zom_outbox_drain() {
 # unreachable from mini. bg.jsonl is the spawn ledger: the opencode side reads
 # it to know which sids to watch for completion, this function prints the sid
 # for attaching.
-# spawn 前钩子分发：ZOM_SPAWN_HOOKS 数组里登记的函数会在每个 spawn 点
-# （mini / zom-bg / zom-last）执行前被无参调用，失败不阻塞 spawn。
-# 产品边界：zom 核心不内置任何终端状态集成；消费方（如 wezterm-attention）
-# 在自己的 zsh 配置里 ZOM_SPAWN_HOOKS+=(自己的函数) 完成接入。
+# Spawn-hook dispatch: functions registered in the ZOM_SPAWN_HOOKS array are
+# called with no arguments before every spawn point (mini / zom-bg /
+# zom-last); a failing hook must not block the spawn.
+# Product boundary: zom core ships no terminal-state integration; consumers
+# (e.g. wezterm-attention) hook in via ZOM_SPAWN_HOOKS+=(fn) in their own
+# zsh config.
 typeset -gU ZOM_SPAWN_HOOKS
 __zom_run_spawn_hooks() {
   local h
   for h in ${=ZOM_SPAWN_HOOKS:-}; do
     if (( $+functions[$h] )); then
-      "$h" || true   # err_return 环境下钩子失败不得中止 spawn 路径
+      # Hooks run on behalf of the interactive user, but one spawn point is a
+      # ZLE widget — and inside a widget `[[ -t 0 ]]` is false even in a real
+      # terminal (zsh runs widgets with stdin detached). Hooks that probe the
+      # terminal (wezterm-attention's claim refuses with "unsafe_tty") would
+      # misfire on a widget-spawned mini, so reconnect stdin to the real
+      # terminal device. Where no controlling tty exists at all (cron, tests)
+      # the redirect itself fails and would skip the hook — probe first and
+      # fall back to the inherited stdin.
+      if ( : </dev/tty ) 2>/dev/null; then
+        "$h" </dev/tty || true
+      else
+        "$h" || true
+      fi
     fi
   done
   return 0
@@ -451,11 +487,16 @@ __zom_failure_prefill() {
   local info cwd
   info=$(jq -r '[.epoch // 0, .exit // "?", .cmd // ""] | @tsv' "$f" 2>/dev/null) || return 1
   cwd=$(jq -r '.cwd // ""' "$f" 2>/dev/null) || return 1
-  local epoch exit_code cmd
-  epoch=${info[(w)1]}
-  exit_code=${info[(w)2]}
-  cmd=${info[(w)3,-1]}
-  [[ "$epoch" == <-> ]] || return 1
+  local epoch exit_code cmd rest
+  # Split on the first two real tabs only. jq's @tsv escapes tabs inside cmd
+  # to a literal backslash-t, so real tabs appear exactly as the two field
+  # separators; splitting with ${(w)} here would collapse runs of spaces in
+  # the original command into one.
+  epoch=${info%%$'\t'*}
+  rest=${info#*$'\t'}
+  exit_code=${rest%%$'\t'*}
+  cmd=${rest#*$'\t'}
+  __zom_is_uint "$epoch" || return 1
   (( EPOCHSECONDS - epoch <= ZOM_FAILURE_TTL )) || return 1
   # Directory match: a failure observed in another working directory must not
   # surface here, even inside the TTL window (different project, different bug).
@@ -546,6 +587,9 @@ __zom_launch_mini() {
   if [[ "$ZOM_PASSTHROUGH" == on ]]; then
     rm -f "$ZOM_PASSTHROUGH_FILE"
     local -x ZOM_PASSTHROUGH_FILE="$ZOM_PASSTHROUGH_FILE"
+    if [[ -n "$ZOM_PASSTHROUGH_KEYS" ]]; then
+      local -x ZOM_PASSTHROUGH_KEYS="$ZOM_PASSTHROUGH_KEYS"
+    fi
   fi
   local -a ZOM_ARGV
   __zom_mini_argv "$@"
@@ -584,12 +628,25 @@ zom() {
 }
 
 # Quick ask: hand the most recent failed command straight to `opencode run`,
-# no TUI.
+# no TUI. Same freshness rules as the composer prefill: a record older than
+# companion.failureTtlSeconds, or one from a different directory, does not
+# count as "the last failure" here either.
 zom-last() {
-  local last_failed
-  last_failed=$(jq -r '.cmd // empty' "$ZOM_DATA_DIR/last-failure.json" 2>/dev/null)
+  local f="$ZOM_DATA_DIR/last-failure.json"
+  local last_failed epoch cwd
+  last_failed=$(jq -r '.cmd // empty' "$f" 2>/dev/null)
   if [[ -z "$last_failed" ]]; then
     print -u2 "zom-last: no failed command on record"
+    return 1
+  fi
+  epoch=$(jq -r '.epoch // 0' "$f" 2>/dev/null)
+  cwd=$(jq -r '.cwd // ""' "$f" 2>/dev/null)
+  if ! __zom_is_uint "$epoch" || (( EPOCHSECONDS - epoch > ZOM_FAILURE_TTL )); then
+    print -u2 "zom-last: failure record is stale (older than ${ZOM_FAILURE_TTL}s)"
+    return 1
+  fi
+  if [[ "$cwd" != "$PWD" ]]; then
+    print -u2 "zom-last: last failure was in $cwd, not here"
     return 1
   fi
   print -- "zom-last: $last_failed"
