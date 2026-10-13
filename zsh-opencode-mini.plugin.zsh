@@ -294,20 +294,8 @@ if [[ -n "$ZOM_HISTORY_RETAIN" && -d "$ZOM_DATA_DIR" ]]; then
   } 2>/dev/null
 fi
 
-# Pathological-growth sentinel, once per shell. A runaway loop can flood the
-# monthly file faster than retention can age it out; past a fixed ceiling the
-# file is almost certainly garbage, so surface it instead of letting the store
-# grow silently. Warn-only: deleting live data on a heuristic would be worse.
-# knockout: fixed 10 MB ceiling, make it configurable if a real workload ever
-# legitimately exceeds it
-if [[ -d "$ZOM_DATA_DIR" ]]; then
-  for _ZOM_F in "$ZOM_DATA_DIR"/history-*.jsonl(N); do
-    if (( $(wc -c < "$_ZOM_F" 2>/dev/null || echo 0) > 10485760 )); then
-      print -u2 -- "zsh-opencode-mini: ${_ZOM_F:t} is over 10 MB — likely a runaway producer; inspect and trim it"
-    fi
-  done
-  unset _ZOM_F
-fi
+# (The pathological-growth sentinel lives at the bottom of this file, after
+# the helper functions it uses.)
 
 # ---- JSON helper ----
 # Hand-rolled escaping, zero dependencies. Covers JSON structural chars
@@ -499,6 +487,14 @@ __zom_outbox_drain() {
 typeset -gU ZOM_SPAWN_HOOKS
 __zom_run_spawn_hooks() {
   local -x ZOM_HOOK_KIND=${1:-} ZOM_HOOK_SID=${2:-} ZOM_HOOK_CWD=$PWD
+  # Usage measurement: one line per spawn, all builtins. Nothing consumes
+  # spawns.jsonl yet — it exists to answer "how often is this thing actually
+  # summoned", the number that decides where future awareness features belong
+  # (a channel read twice a day cannot carry urgent facts).
+  # knockout: unrotated append-only; at ~40 bytes/line even heavy use takes
+  # years to matter — if it ever does, fold it into the monthly rotation.
+  [[ -d "$ZOM_DATA_DIR" ]] && \
+    print -r -- "{\"ts\":$EPOCHSECONDS,\"kind\":\"${ZOM_HOOK_KIND}\"}" >> "$ZOM_DATA_DIR/spawns.jsonl"
   local h
   for h in ${=ZOM_SPAWN_HOOKS:-}; do
     if (( $+functions[$h] || $+commands[$h] )) || [[ -x "$h" ]]; then
@@ -511,9 +507,13 @@ __zom_run_spawn_hooks() {
       # the redirect itself fails and would skip the hook — probe first and
       # fall back to the inherited stdin.
       if ( : </dev/tty ) 2>/dev/null; then
-        "$h" </dev/tty || true
+        "$h" </dev/tty || {
+          # A hook that fails produces no output of its own — without this
+          # notice the user's customized scenario silently stops working.
+          __zom_notice hook-failure "spawn hook $h exited $? (kind=$ZOM_HOOK_KIND); it did not run"
+        }
       else
-        "$h" || true
+        "$h" || __zom_notice hook-failure "spawn hook $h exited $? (kind=$ZOM_HOOK_KIND); it did not run"
       fi
     fi
   done
@@ -661,6 +661,25 @@ __zom_launch_mini() {
   local -a ZOM_ARGV
   __zom_mini_argv "$@"
   "$ZOM_BINARY" "${ZOM_ARGV[@]}"
+}
+
+# Shell-side notices. Some degradations produce no output at all (a hook that
+# stopped running) or flash by at shell start (the size sentinel) — the user
+# cannot perceive them in daily use. They are appended to notices.jsonl; the
+# opencode companion drains that file into the context injection on the next
+# summon, so the model surfaces them naturally. Delivery is at-most-once and
+# loss-tolerant by design (DESIGN philosophy, same as the outbox): a lost
+# notice costs one silent degradation period, a duplicated one costs nothing.
+# Dedupe per shell per (kind, text): a hook that fails on every spawn must not
+# append on every spawn.
+typeset -gA __ZOM_NOTICED
+__zom_notice() {  # <kind> <text>
+  local key="$1"$'\n'"$2"
+  (( ${+__ZOM_NOTICED[$key]} )) && return 0
+  __ZOM_NOTICED[$key]=1
+  [[ -d "$ZOM_DATA_DIR" ]] || return 0
+  print -r -- "{\"ts\":$EPOCHSECONDS,\"kind\":\"$(__zom_json_escape "$1")\",\"text\":\"$(__zom_json_escape "$2")\"}" \
+    >> "$ZOM_DATA_DIR/notices.jsonl" 2>/dev/null
 }
 
 # Unclaimed-key feedback. The fork logs keys nobody claimed to
@@ -922,3 +941,22 @@ zom-config() {
     print -r -- "  NOT FOUND — run scripts/install-zom-binary.sh or set shell.binary"
   fi
 }
+
+# ---- pathological-growth sentinel, once per shell ----
+# A runaway loop can flood the monthly file faster than retention can age it
+# out; past a fixed ceiling the file is almost certainly garbage, so surface
+# it instead of letting the store grow silently. Warn-only: deleting live
+# data on a heuristic would be worse. Two surfaces: stderr now (the user may
+# be watching), notices.jsonl for the companion to inject on the next summon
+# (the user may not have been).
+# knockout: fixed 10 MB ceiling, make it configurable if a real workload ever
+# legitimately exceeds it
+if [[ -d "$ZOM_DATA_DIR" ]]; then
+  for _ZOM_F in "$ZOM_DATA_DIR"/history-*.jsonl(N); do
+    if (( $(wc -c < "$_ZOM_F" 2>/dev/null || echo 0) > 10485760 )); then
+      print -u2 -- "zsh-opencode-mini: ${_ZOM_F:t} is over 10 MB — likely a runaway producer; inspect and trim it"
+      __zom_notice history-oversized "${_ZOM_F:t} is over 10 MB — likely a runaway producer writing shell history; inspect and trim it"
+    fi
+  done
+  unset _ZOM_F
+fi

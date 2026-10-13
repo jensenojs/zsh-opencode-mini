@@ -23,6 +23,8 @@
 //     outbox — the zsh side reads outbox.jsonl via its byte cursor
 //   - zom-bg notifications: watch session.execution.* for background sessions
 //     recorded in bg.jsonl and append {kind:"bg-done"} lines to the outbox
+//   - notices: drain shell-side degraded-state facts (notices.jsonl) into the
+//     context injection so the next session surfaces them to the user
 
 import {
   readFileSync,
@@ -41,6 +43,9 @@ const DEFAULTS = {
   failureTtlSeconds: 600,
   recentDefaultN: 20,
   recipeTtlSeconds: 900,
+  // Identical failures of one command within a day that trigger a single
+  // outbox hint. 0 disables.
+  repeatFailureThreshold: 3,
 }
 
 // The three trigger sources and the template slots each one actually
@@ -214,6 +219,53 @@ function readLastFailure(dataDir) {
   }
 }
 
+// --- shell-side notices ----------------------------------------------------
+// The zsh side appends degraded-state facts (hook failures, oversized
+// history) to notices.jsonl — states the user cannot perceive in daily use.
+// Drained into the context injection on the next session: the model surfaces
+// them naturally, no popup, no interruption. Consumption is destructive
+// (tmp+mv truncate): the file self-cleans and there is no cursor to keep in
+// sync. An append racing the truncate lands on the old inode and is lost —
+// tolerated, same philosophy as the outbox.
+function drainNotices(dataDir) {
+  const p = join(dataDir, "notices.jsonl")
+  if (!existsSync(p)) return []
+  const raw = readFileSync(p, "utf8")
+  const seen = new Map() // kind+text -> latest record (producer may repeat across shells)
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue
+    try {
+      const r = JSON.parse(line)
+      seen.set(`${r.kind} ${r.text}`, r)
+    } catch {} // a torn line is not worth failing the injection over
+  }
+  const tmp = `${p}.tmp`
+  writeFileSync(tmp, "")
+  renameSync(tmp, p)
+  return [...seen.values()]
+}
+
+// Repeated-failure awareness. Every non-zero exit already wakes the failure
+// watcher, so counting costs one read of a bounded store. Exact-string match
+// on the command — a changed argument is a different command; that is the
+// documented granularity limit of this heuristic.
+function countTodayFailures(monthPath, cmd) {
+  if (!existsSync(monthPath)) return 0
+  const d = new Date()
+  const today =
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}` +
+    `-${String(d.getDate()).padStart(2, "0")}`
+  let n = 0
+  for (const line of readFileSync(monthPath, "utf8").split("\n")) {
+    if (!line.trim()) continue
+    try {
+      const r = JSON.parse(line)
+      if (r.cmd === cmd && r.exit !== 0 && typeof r.ts === "string" && r.ts.startsWith(today)) n++
+    } catch {} // a torn line is skipped, same as everywhere else
+  }
+  return n
+}
+
 // --- plugin ----------------------------------------------------------------
 
 export default {
@@ -226,8 +278,14 @@ export default {
     const dataDir = shellDataDir(fullCfg)
     const recipes = compileRecipes(fullCfg?.recipes)
     const hasRecipes = Object.keys(recipes).length > 0
-    const monthFile = () =>
-      join(dataDir, `history-${new Date().toISOString().slice(0, 7)}.jsonl`)
+    // The zsh side names the file by local month (strftime); toISOString is
+    // UTC and would read the wrong file in the hours after a local month
+    // rollover.
+    const monthFile = () => {
+      const d = new Date()
+      const m = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+      return join(dataDir, `history-${m}.jsonl`)
+    }
 
     // Probe exactly what this configuration will touch: bg-done watching is
     // always on, generation/storage only when recipes can fire.
@@ -421,6 +479,17 @@ export default {
             `The zom_context tool can pull more history if relevant.`,
         })
       }
+      const notices = drainNotices(dataDir)
+      if (notices.length > 0) {
+        event.system.push({
+          type: "text",
+          text:
+            `[zsh-opencode-mini] shell-side notices pending — degraded states the ` +
+            `user cannot see in daily use; surface them proactively at a natural ` +
+            `point in the conversation:\n` +
+            notices.map((n) => `- [${n.kind}] ${n.text}`).join("\n"),
+        })
+      }
       for (const [name, out] of outputs) {
         if (now - out.ts > out.ttlSeconds) { outputs.delete(name); continue }
         event.system.push({
@@ -444,6 +513,17 @@ export default {
       if (!sig || sig.epoch === lastFiredEpoch) return
       lastFiredEpoch = sig.epoch
       fireFailureRecipes(sig)
+      // Repeat-failure hint: counts are monotone within a day, so
+      // count === threshold fires exactly once per command per day. This is
+      // the aggregation a human cannot do from the seat — each failure is
+      // visible, "the third one today" is not.
+      const threshold = cfg.repeatFailureThreshold
+      if (threshold > 0 && countTodayFailures(monthFile(), sig.cmd) === threshold) {
+        appendOutbox({
+          kind: "repeat-failure",
+          text: `'${sig.cmd}' has failed ${threshold} times today — worth a closer look before retrying again`,
+        })
+      }
     })
 
     // zom-bg completion notifications: watch server events for sessions the

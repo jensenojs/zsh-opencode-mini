@@ -83,6 +83,11 @@ use = ["zsh-opencode-mini.plugin.zsh"]
 - opencode 插件把这个存储暴露成 `zom_context` 工具和带新鲜度门槛的
   context 注入；结果与通知经唯一的 `outbox.jsonl` 返回，shell 在每个
   提示符前消费。
+- shell 侧的退化状态（spawn 钩子失败、history 文件超阈值）追加进
+  `notices.jsonl`；companion 在下一次会话把它 drain 进 context 注入，
+  日常使用中感知不到的状态由模型主动提起，不会无声烂掉。
+- companion 还会统计同一天内同一条命令的失败次数，到阈值往 outbox 丢
+  一条提示——每次失败你看得见，次数你看不见。
 - opencode 插件 API 漂移时大声拒绝加载（锚定最新 v2）。
 
 ### spawn 钩子
@@ -98,8 +103,9 @@ spawn 现场的事实，钩子决定拿这些事实做什么。每次调用通�
 - `ZOM_HOOK_CWD` — spawn 发生的目录
 
 钩子的 stdin 接的是真实终端（召唤 widget 的 stdin 不是 tty，不做这一步
-探测终端的钩子会误判）。钩子失败不会阻塞 spawn。zom 核心不内置任何
-终端状态集成，wezterm-attention 这类消费方放在你自己的 zsh 配置里。
+探测终端的钩子会误判）。钩子失败不会阻塞 spawn，但会记一条 notice，
+下一次会话由模型主动提起（见上）。zom 核心不内置任何终端状态集成，
+wezterm-attention 这类消费方放在你自己的 zsh 配置里。
 
 ## 已知限制
 

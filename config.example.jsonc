@@ -66,7 +66,10 @@
     // How long (seconds) a failed command stays "fresh" for context injection.
     "failureTtlSeconds": 600,
     // Lines returned by the zom_context tool with query=recent.
-    "recentDefaultN": 20
+    "recentDefaultN": 20,
+    // Identical failures of one command within a day that trigger a single
+    // outbox hint (0 disables).
+    "repeatFailureThreshold": 3
   },
   "recipes": {
     // Declarative model calls fired from shell events, evaluated by the

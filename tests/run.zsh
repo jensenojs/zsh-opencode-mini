@@ -789,6 +789,42 @@ t_S29_size_sentinel() {
   cleanup
 }
 
+# S30: shell-side notices — a failing spawn hook appends one notice per shell
+# (deduped), and the size sentinel drops a notice beside its stderr warning.
+t_S30_notices() {
+  sandbox
+  mkdir -p "$DD"
+  run_zsh 'failing_hook() { return 7 }
+    ZOM_SPAWN_HOOKS=(failing_hook)
+    zom-bg "one"
+    zom-bg "two"'
+  local nf="$DD/notices.jsonl"
+  [[ -f "$nf" ]] || { (( FAIL++ )); print -r -- "  FAIL  S30 notice written: file missing"; cleanup; return }
+  local lines
+  lines=$(grep -c 'hook-failure' "$nf")
+  assert_eq "S30 hook failure deduped per shell" "$lines" "1"
+  assert_contains "S30 notice names hook and rc" "$(cat "$nf")" 'failing_hook exited 7'
+  assert_contains "S30 notice carries kind" "$(cat "$nf")" 'kind=bg'
+  # sentinel notice beside the stderr warning
+  dd if=/dev/zero of="$DD/history-2026-10.jsonl" bs=1048576 count=11 2>/dev/null
+  run_zsh ':'
+  assert_contains "S30 sentinel drops a notice" "$(cat "$nf")" 'history-oversized'
+  cleanup
+}
+
+# S31: every spawn appends one usage-measurement line to spawns.jsonl.
+t_S31_spawn_measurement() {
+  sandbox
+  mkdir -p "$DD"
+  run_zsh 'zom-bg "one"
+    zom-bg "two"'
+  local sf="$DD/spawns.jsonl"
+  [[ -f "$sf" ]] || { (( FAIL++ )); print -r -- "  FAIL  S31 spawns.jsonl written: file missing"; cleanup; return }
+  assert_eq "S31 one line per spawn" "$(grep -c '' "$sf")" "2"
+  assert_eq "S31 kind recorded" "$(grep -c '"kind":"bg"' "$sf")" "2"
+  cleanup
+}
+
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
@@ -797,7 +833,7 @@ for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload
          t_S18_zom_config t_S19_agent_md_frontmatter t_S20_widget_always_cold_start t_S21_resource_idempotent \
          t_S22_argv_probe t_S23_sequence_conflict t_S24_regression_fixes \
          t_S25_history_retention t_S26_unclaimed_hint t_S27_hook_context \
-         t_S28_external_hook t_S29_size_sentinel; do
+         t_S28_external_hook t_S29_size_sentinel t_S30_notices t_S31_spawn_measurement; do
   print -r -- "[$t]"
   $t
 done

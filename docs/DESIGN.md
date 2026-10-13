@@ -52,6 +52,14 @@ touches the prompt. Uninstall = delete the source line.
   prompt from a byte cursor it alone owns, printing one `zom: <text>` line
   before your prompt. Recipe results and background-session completion
   notices share this one pipe — no second channel exists.
+- **notices.jsonl carries shell-side degraded states** (a failing spawn hook,
+  an oversized history file) — facts whose symptom is the absence of output,
+  invisible from the user's seat. The companion drains them into the next
+  session's context injection and truncates the file at that moment.
+- **spawns.jsonl is usage measurement** — one line per summon, all builtins.
+  Nothing consumes it yet; it exists to answer "how often is mini actually
+  summoned", the number that decides where future awareness features can
+  live (a channel read twice a day cannot carry urgent facts).
 - **agent definition** carries only behavior rules, not strategy — strategy
   moved from prompt conventions into code.
 - **One config file, two consumers.** The plugin runs in two runtimes (a zsh
@@ -94,6 +102,34 @@ Failures are visible: an invalid recipe field is a loud load-time error, a
 model-call failure lands in the outbox as a `recipe-error` line, and the
 per-hour cap is a hard gate. A worked example (`failure-hint`) ships in
 [`config.example.jsonc`](config.example.jsonc).
+
+### Awareness: noticing what the user cannot see
+
+Facts the plugin surfaces split into two delivery styles, chosen by how much
+judgment the text needs:
+
+- **Immediate stderr** — facts about the tool itself (unclaimed keys piling
+  up, an oversized history file). The message can be written once,
+  deterministically; waiting for a model would only delay it.
+- **Queued for the model** — facts whose phrasing or timing depends on
+  context (degraded states in notices.jsonl, recipe results). The model
+  surfaces them at a natural point in the conversation.
+
+notices.jsonl consumption is destructive: the file is truncated the moment
+its content enters a system prompt, and whether the model actually mentions
+it is unobserved. The channel therefore accepts only **re-derivable
+detections** — facts the producer re-detects and re-appends on its next
+natural run (the hook keeps failing on the next spawn, the file stays
+oversized on the next shell start). One-shot events do not belong here;
+they would be silently lost.
+
+The repeat-failure hint is the third producer shape. Every non-zero exit
+already wakes the companion's failure watcher, which recounts today's
+identical failures from the monthly history file and drops one outbox line
+at the threshold crossing. Counts are monotone within a day, so
+`count === threshold` fires exactly once per command per day — no state
+file. Exact-string match is the documented granularity limit: a changed
+argument is a different command.
 
 ### Configuration system
 

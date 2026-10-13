@@ -90,6 +90,13 @@ under `~/.config/opencode/`); the plugin never writes configuration.
 - the opencode plugin exposes that store as the `zom_context` tool and a
   freshness-gated context hook; results and notices return through a single
   `outbox.jsonl` that the shell drains before each prompt.
+- shell-side degraded states (a failing spawn hook, an oversized history
+  file) append to `notices.jsonl`; the companion drains it into the context
+  injection on the next session, so states the user cannot see in daily use
+  get surfaced by the model instead of going unnoticed.
+- the companion also counts identical command failures within a day and
+  drops one hint into the outbox at the threshold — each failure is visible
+  to you, the count is not.
 - the opencode plugin refuses to load loudly if the plugin API drifts
   (anchored to latest v2).
 
@@ -108,7 +115,8 @@ for the duration of the call):
 
 Hooks inherit the real terminal on stdin (the summon widget's stdin is not
 a tty, and terminal-probing hooks would misfire without this). A failing
-hook never blocks the spawn. zom core ships no terminal-state integration;
+hook never blocks the spawn, but the failure appends a notice that the next
+session surfaces (see above). zom core ships no terminal-state integration;
 consumers such as wezterm-attention live in your own zsh config.
 
 ## Known limits

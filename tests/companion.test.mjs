@@ -460,6 +460,76 @@ try {
     clean()
   }
 
+  // 18. notices: pending shell-side notices are injected once, deduped by
+  //     kind+text, and the file self-cleans; a second hook sees nothing
+  {
+    const sb = rootSandbox(); sb.use()
+    const { ctx, state } = makeCtx()
+    const clean = plugin.setup(ctx)
+    const notices = join(sb.dataDir, "notices.jsonl")
+    writeFileSync(notices,
+      JSON.stringify({ ts: now - 100, kind: "hook-failure", text: "spawn hook foo exited 1 (kind=bg); it did not run" }) + "\n" +
+      JSON.stringify({ ts: now - 50, kind: "hook-failure", text: "spawn hook foo exited 1 (kind=bg); it did not run" }) + "\n" +
+      JSON.stringify({ ts: now - 10, kind: "history-oversized", text: "history-2026-10.jsonl is over 10 MB" }) + "\n" +
+      `{"kind":"torn","text":"never completed`)
+    const ev = contextEvent()
+    state.contextHooks[0](ev)
+    const line = ev.system.find((s) => s.text.includes("shell-side notices"))
+    const count = line ? (line.text.match(/hook-failure/g) || []).length : 0
+    line && count === 1 && line.text.includes("history-oversized") && !line.text.includes("torn")
+      ? ok("notices injected deduped")
+      : bad("notices injected deduped", JSON.stringify(ev.system))
+    readFileSync(notices, "utf8") === ""
+      ? ok("notices file self-cleans after drain")
+      : bad("notices file self-cleans after drain", readFileSync(notices, "utf8"))
+    const ev2 = contextEvent()
+    state.contextHooks[0](ev2)
+    !ev2.system.some((s) => s.text.includes("shell-side notices"))
+      ? ok("notices drained once")
+      : bad("notices drained once", JSON.stringify(ev2.system))
+    clean()
+  }
+
+  // 19. repeat-failure: the threshold-th identical failure today drops one
+  //     outbox hint; further failures stay silent (count === threshold fires
+  //     once per command per day)
+  {
+    const sb = rootSandbox(); sb.use()
+    const { ctx, state } = makeCtx()
+    const clean = plugin.setup(ctx)
+    const d = new Date()
+    const month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+    const today = `${month}-${String(d.getDate()).padStart(2, "0")}`
+    const line = (cmd, exit) =>
+      JSON.stringify({ ts: `${today}T10:00:00+0800`, cwd: "/w", exit, ms: 1, cmd })
+    // In production precmd appends the failing command to history BEFORE
+    // replacing last-failure.json, so when the watcher wakes the current
+    // failure is already counted. Three history lines + the signal = the
+    // third failure.
+    writeFileSync(join(sb.dataDir, `history-${month}.jsonl`),
+      line("make test", 1) + "\n" + line("make test", 1) + "\n" + line("make test", 1) + "\n" +
+      line("make test", 0) + "\n" + line("git push", 1) + "\n")
+    const repeats = () => readOutbox(sb.dataDir).filter((r) => r.kind === "repeat-failure")
+    // two failures already on record; this one is the third -> hint
+    const epoch = await fireViaWatcher(sb.dataDir,
+      { ts: "x", epoch: now, cwd: "/w", exit: 1, cmd: "make test" },
+      () => repeats().length, 1)
+    epoch !== null && repeats()[0].text.includes("'make test' has failed 3 times today")
+      ? ok("repeat-failure hint at threshold")
+      : bad("repeat-failure hint at threshold", JSON.stringify(repeats()))
+    // the fourth failure must not re-hint — append it to history first,
+    // exactly like precmd would, so count is 4 and the hint must stay silent
+    writeFileSync(join(sb.dataDir, `history-${month}.jsonl`),
+      line("make test", 1) + "\n", { flag: "a" })
+    atomicSignal(sb.dataDir, { ts: "x", epoch: (epoch ?? now) + 100, cwd: "/w", exit: 1, cmd: "make test" })
+    await waitFor(() => readFileSync(join(sb.dataDir, "last-failure.json"), "utf8").includes(`${(epoch ?? now) + 100}`))
+    await new Promise((r) => setTimeout(r, 300))
+    repeats().length === 1
+      ? ok("repeat-failure fires once per command per day")
+      : bad("repeat-failure fires once per command per day", JSON.stringify(repeats()))
+    clean()
+  }
+
   // 15. recipes config with no matching signals leaves zero injection
   {
     const sb = rootSandbox(); sb.use()
