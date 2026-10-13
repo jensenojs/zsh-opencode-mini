@@ -407,11 +407,26 @@ __zom_outbox_drain() {
 # unreachable from mini. bg.jsonl is the spawn ledger: the opencode side reads
 # it to know which sids to watch for completion, this function prints the sid
 # for attaching.
+# spawn 前钩子分发：ZOM_SPAWN_HOOKS 数组里登记的函数会在每个 spawn 点
+# （mini / zom-bg / zom-last）执行前被无参调用，失败不阻塞 spawn。
+# 产品边界：zom 核心不内置任何终端状态集成；消费方（如 wezterm-attention）
+# 在自己的 zsh 配置里 ZOM_SPAWN_HOOKS+=(自己的函数) 完成接入。
+typeset -gU ZOM_SPAWN_HOOKS
+__zom_run_spawn_hooks() {
+  local h
+  for h in ${=ZOM_SPAWN_HOOKS:-}; do
+    if (( $+functions[$h] )); then
+      "$h" || true   # err_return 环境下钩子失败不得中止 spawn 路径
+    fi
+  done
+  return 0
+}
 zom-bg() {
   if (( $# == 0 )); then
     print -u2 -- "zom-bg: usage: zom-bg <prompt...>"
     return 1
   fi
+  __zom_run_spawn_hooks
   local sid="ses_zom-bg-${EPOCHSECONDS}-$$"
   "$ZOM_BINARY" run -s "$sid" "$@" >/dev/null 2>&1 &
   local pid=$!   # capture before anything else can spawn — $! is the run process
@@ -522,6 +537,7 @@ __zom_launch_mini() {
   if ! __zom_mini_probe; then
     return 1   # loud: the probe already reported on stderr; do not exec
   fi
+  __zom_run_spawn_hooks
   # The summon loop reuses one session; the entry ("▪ oc mini …") and exit
   # ("Session …") splash banners would stamp a fresh pair into scrollback on
   # every C-x. Hide them via the CLI-config env overlay — this plugin-owned
@@ -577,6 +593,7 @@ zom-last() {
     return 1
   fi
   print -- "zom-last: $last_failed"
+  __zom_run_spawn_hooks
   "$ZOM_BINARY" run "Explain and fix this failed command (run in the current directory): $last_failed"
 }
 
