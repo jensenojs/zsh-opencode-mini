@@ -39,6 +39,7 @@ __zom_cfg_load() {
     ZOM_CFG[replayLimit]=""
     ZOM_CFG[passthrough]=""
     ZOM_CFG[passthroughKeys]=""
+    ZOM_CFG[historyRetainMonths]=""
     ZOM_CFG[failurePrefill]=""
     ZOM_CFG[model]=""
     ZOM_CFG[failureTtlSeconds]=""
@@ -57,6 +58,7 @@ __zom_cfg_load() {
     "ZOM_CFG[replayLimit]="       + (($s.replayLimit    // "") | @sh),
     "ZOM_CFG[passthrough]="       + (($s.passthrough    // "") | @sh),
     "ZOM_CFG[passthroughKeys]="   + (($s.passthroughKeys // "") | @sh),
+    "ZOM_CFG[historyRetainMonths]=" + (($s.historyRetainMonths // "") | @sh),
     "ZOM_CFG[failurePrefill]="    + (($s.failurePrefill // "") | @sh),
     "ZOM_CFG[model]="             + (($s.model          // "") | @sh),
     "ZOM_CFG[failureTtlSeconds]=" + ((.companion.failureTtlSeconds // "") | @sh),
@@ -89,6 +91,7 @@ typeset -gA ZOM_DEFAULTS=(
   [replayLimit]="50"
   [passthrough]="on"
   [passthroughKeys]=""
+  [historyRetainMonths]="6"
   [failurePrefill]=$'上一条命令失败了（exit {exit}）：{cmd}\n帮我分析失败原因并给出修复建议'
   [model]=""
   [failureTtlSeconds]="600"
@@ -233,6 +236,20 @@ ZOM_PASSTHROUGH_FILE="$ZOM_DATA_DIR/passthrough.$$"
 ZOM_PASSTHROUGH_KEYS=${ZOM_CFG[passthroughKeys]}
 [[ "$ZOM_PASSTHROUGH_KEYS" == null ]] && ZOM_PASSTHROUGH_KEYS=""
 
+# History retention. Monthly files accumulate forever otherwise; files older
+# than shell.historyRetainMonths are deleted once per shell at source time.
+# "off" keeps everything.
+ZOM_HISTORY_RETAIN=${ZOM_CFG[historyRetainMonths]}
+case "$ZOM_HISTORY_RETAIN" in
+  "" | null) ZOM_HISTORY_RETAIN="${ZOM_DEFAULTS[historyRetainMonths]}" ;;
+  off)       ZOM_HISTORY_RETAIN="" ;;
+  *)
+    if ! __zom_is_uint "$ZOM_HISTORY_RETAIN" || [[ "$ZOM_HISTORY_RETAIN" -lt 1 ]]; then
+      print -u2 -- "zsh-opencode-mini: shell.historyRetainMonths '$ZOM_HISTORY_RETAIN' invalid (positive integer|off) — using ${ZOM_DEFAULTS[historyRetainMonths]}."
+      ZOM_HISTORY_RETAIN="${ZOM_DEFAULTS[historyRetainMonths]}"
+    fi ;;
+esac
+
 # Failure→prefill template. Mechanism (TTL check, placeholder substitution)
 # lives here; the wording is policy and lives in the config.
 # Placeholders: {cmd} {exit} {cwd}. "off" disables the prefill entirely.
@@ -256,6 +273,25 @@ autoload -Uz add-zsh-hook
 if [[ ! -d "$ZOM_DATA_DIR" ]]; then
   mkdir -p "$ZOM_DATA_DIR" 2>/dev/null || \
     print -u2 -- "zsh-opencode-mini: cannot create data dir $ZOM_DATA_DIR — recording disabled"
+fi
+
+# Rolling history cleanup, once per shell. YYYY-MM strings compare
+# lexicographically, so a file is dropped when its month sorts before the
+# cutoff month. Month arithmetic goes through a total-months counter to
+# avoid year-boundary special cases.
+if [[ -n "$ZOM_HISTORY_RETAIN" && -d "$ZOM_DATA_DIR" ]]; then
+  {
+    strftime -s _ZOM_Y '%Y' $EPOCHSECONDS
+    strftime -s _ZOM_M '%m' $EPOCHSECONDS
+    _ZOM_TOTAL=$(( _ZOM_Y * 12 + 10#$_ZOM_M - ZOM_HISTORY_RETAIN - 1 ))
+    _ZOM_CUTOFF=$(printf '%04d-%02d' $(( _ZOM_TOTAL / 12 )) $(( _ZOM_TOTAL % 12 + 1 )))
+    for _ZOM_F in "$ZOM_DATA_DIR"/history-*.jsonl(N); do
+      _ZOM_NAME=${${_ZOM_F:t}#history-}
+      _ZOM_NAME=${_ZOM_NAME%.jsonl}
+      [[ "$_ZOM_NAME" < "$_ZOM_CUTOFF" ]] && command rm -f "$_ZOM_F"
+    done
+    unset _ZOM_Y _ZOM_M _ZOM_TOTAL _ZOM_CUTOFF _ZOM_F _ZOM_NAME
+  } 2>/dev/null
 fi
 
 # ---- JSON helper ----
@@ -596,6 +632,24 @@ __zom_launch_mini() {
   "$ZOM_BINARY" "${ZOM_ARGV[@]}"
 }
 
+# Unclaimed-key feedback. The fork logs keys nobody claimed to
+# <passthrough-file>.keys.log; when the same stroke shows up repeatedly the
+# user is pressing something mini ignores — say so once per shell per stroke
+# and name the two fixes (bind it in mini, or allowlist it for shell replay).
+typeset -gA __ZOM_HINTED
+__zom_unclaimed_hint() {
+  [[ "$ZOM_PASSTHROUGH" == on ]] || return 0
+  local log="${ZOM_PASSTHROUGH_FILE}.keys.log"
+  [[ -s "$log" ]] || return 0
+  local n stroke
+  while read -r n stroke; do
+    if (( n >= 3 )) && (( ! ${+__ZOM_HINTED[$stroke]} )); then
+      __ZOM_HINTED[$stroke]=1
+      print -u2 -- "zsh-opencode-mini: '${(V)stroke}' unclaimed $n times — bind it in mini, or add it to shell.passthroughKeys to replay it to the shell"
+    fi
+  done < <(jq -r '.stroke // empty' "$log" 2>/dev/null | sort | uniq -c)
+}
+
 # ZLE widget: pause the line editor (zle -I), run the fullscreen TUI,
 # then repaint the prompt.
 __zom_mini_widget() {
@@ -619,6 +673,7 @@ __zom_mini_widget() {
     rm -f "$ZOM_PASSTHROUGH_FILE"
     zle -U -- "$keys"
   fi
+  __zom_unclaimed_hint
   zle reset-prompt
 }
 
@@ -791,6 +846,8 @@ zom-config() {
   __zom_cfg_line replay         "$ZOM_REPLAY"
   __zom_cfg_line replayLimit    "$ZOM_REPLAY_LIMIT"
   __zom_cfg_line passthrough    "$ZOM_PASSTHROUGH"
+  __zom_cfg_line passthroughKeys "$ZOM_PASSTHROUGH_KEYS"
+  __zom_cfg_line historyRetainMonths "${ZOM_HISTORY_RETAIN:-off}"
   __zom_cfg_line failurePrefill "$ZOM_FAILURE_PREFILL_TMPL"
   __zom_cfg_line model          "${ZOM_CFG[model]}"
   print -r -- "companion (read by the opencode-side plugin, per session):"

@@ -687,13 +687,59 @@ t_S24_regression_fixes() {
   cleanup
 }
 
+t_S25_history_retention() {
+  # Monthly files older than shell.historyRetainMonths are deleted at source
+  # time; the cutoff is computed in total months to survive year boundaries.
+  sandbox
+  mkdir -p "$DD"
+  : > "$DD/history-2020-01.jsonl"
+  : > "$DD/history-$(date +%Y-%m).jsonl"
+  run_zsh ':' >/dev/null
+  assert_file_missing "$DD/history-2020-01.jsonl" "S25 ancient file deleted"
+  assert_file_exists  "$DD/history-$(date +%Y-%m).jsonl" "S25 current file kept"
+  cleanup
+
+  # "off" keeps everything
+  sandbox
+  mkdir -p "$DD"
+  : > "$DD/history-2020-01.jsonl"
+  write_config <<<'{ "shell": { "historyRetainMonths": "off" } }'
+  run_zsh ':' >/dev/null
+  assert_file_exists "$DD/history-2020-01.jsonl" "S25 off keeps ancient file"
+  cleanup
+
+  # invalid value warns and falls back to the default
+  sandbox
+  local out
+  out=$( { write_config <<<'{ "shell": { "historyRetainMonths": "soon" } }'; run_zsh ':'; } 2>&1 )
+  assert_contains "S25 invalid warns" "$out" "historyRetainMonths 'soon' invalid"
+  cleanup
+}
+
+t_S26_unclaimed_hint() {
+  # A stroke logged >=3 times produces exactly one hint per shell; the hint
+  # names both fixes. jq mangles nothing here — the log is written by the
+  # fork, we only read it.
+  sandbox
+  mkdir -p "$DD"
+  # The plugin derives the log name from ZOM_PASSTHROUGH_FILE, so write a
+  # fixture log and point the variable at it inside the sandboxed shell.
+  local out
+  out=$(run_zsh "ZOM_PASSTHROUGH_FILE='$DD/pt'; { for i in 1 2 3; do print -r -- '{\"stroke\":\"ctrl+q\"}'; done; print -r -- '{\"stroke\":\"f9\"}' } > '$DD/pt.keys.log'; __zom_unclaimed_hint; __zom_unclaimed_hint" 2>&1)
+  assert_eq "S26 hint fires once" "$(print -r -- "$out" | grep -c 'unclaimed')" "1"
+  assert_contains "S26 hint names the stroke" "$out" 'ctrl+q'
+  assert_contains "S26 hint names the fixes" "$out" 'passthroughKeys'
+  cleanup
+}
+
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
          t_S12_err_return_survival t_S13_broken_config t_S14_concurrent_append \
          t_S15_zom_last_empty t_S16_outbox_cursor t_S16_outbox_malformed t_S17_zom_bg \
          t_S18_zom_config t_S19_agent_md_frontmatter t_S20_widget_always_cold_start t_S21_resource_idempotent \
-         t_S22_argv_probe t_S23_sequence_conflict t_S24_regression_fixes; do
+         t_S22_argv_probe t_S23_sequence_conflict t_S24_regression_fixes \
+         t_S25_history_retention t_S26_unclaimed_hint; do
   print -r -- "[$t]"
   $t
 done

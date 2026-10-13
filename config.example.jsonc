@@ -50,6 +50,9 @@
     // mini exits and the widget replays the raw bytes into ZLE, so the key
     // takes effect at the shell prompt. Example: "ctrl+r".
     "passthroughKeys": "",
+    // Monthly history files older than this many months are deleted when a
+    // shell starts. "off" keeps everything.
+    "historyRetainMonths": 6,
     // Prompt pre-filled (not sent) in the composer after a failed command,
     // within failureTtlSeconds. Placeholders: {cmd} {exit} {cwd}.
     // Omit for the built-in Chinese template; "off" disables the prefill.
