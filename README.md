@@ -93,6 +93,22 @@ under `~/.config/opencode/`); the plugin never writes configuration.
 - the opencode plugin refuses to load loudly if the plugin API drifts
   (anchored to latest v2).
 
+### Spawn hooks
+
+Functions registered in `ZOM_SPAWN_HOOKS+=(fn)` run before every opencode
+spawn (`zom` widget / `zom-bg` / `zom-last`). The plugin owns the spawn
+facts; the hook decides what to do with them. Each call receives:
+
+- `ZOM_HOOK_KIND` — `mini`, `bg`, or `last`
+- `ZOM_HOOK_SID` — session id when known at hook time (always for `bg`;
+  for `mini` only with `resume: "main"`; empty otherwise)
+- `ZOM_HOOK_CWD` — the directory the spawn happens in
+
+Hooks inherit the real terminal on stdin (the summon widget's stdin is not
+a tty, and terminal-probing hooks would misfire without this). A failing
+hook never blocks the spawn. zom core ships no terminal-state integration;
+consumers such as wezterm-attention live in your own zsh config.
+
 ## Known limits
 
 - commands run inside TUIs never pass through zsh hooks (no self-pollution)

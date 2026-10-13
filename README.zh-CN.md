@@ -85,6 +85,21 @@ use = ["zsh-opencode-mini.plugin.zsh"]
   提示符前消费。
 - opencode 插件 API 漂移时大声拒绝加载（锚定最新 v2）。
 
+### spawn 钩子
+
+在 `ZOM_SPAWN_HOOKS+=(fn)` 里登记的函数会在每次 opencode 拉起前运行
+（`zom` 按键 / `zom-bg` / `zom-last`）。插件负责提供 spawn 现场的事实，
+钩子决定拿这些事实做什么。每次调用能读到：
+
+- `ZOM_HOOK_KIND` — `mini`、`bg` 或 `last`
+- `ZOM_HOOK_SID` — 钩子时刻已知的 session id（`bg` 一定有；`mini` 仅在
+  `resume: "main"` 时有；其余为空）
+- `ZOM_HOOK_CWD` — spawn 发生的目录
+
+钩子的 stdin 接的是真实终端（召唤 widget 的 stdin 不是 tty，不做这一步
+探测终端的钩子会误判）。钩子失败不会阻塞 spawn。zom 核心不内置任何
+终端状态集成，wezterm-attention 这类消费方放在你自己的 zsh 配置里。
+
 ## 已知限制
 
 - TUI 里跑的命令不经过 zsh hook（无自引用污染）

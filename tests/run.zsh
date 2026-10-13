@@ -732,6 +732,31 @@ t_S26_unclaimed_hint() {
   cleanup
 }
 
+# S27: spawn hooks receive the spawn context; zom-bg's hook-visible sid is the
+# real spawned sid (wezterm-attention binds background activity with it).
+t_S27_hook_context() {
+  sandbox
+  run_zsh 'zsh_hook_probe() { print -r -- "$ZOM_HOOK_KIND|$ZOM_HOOK_SID|$ZOM_HOOK_CWD" >> "'$DD'/hooks.txt" }
+    ZOM_SPAWN_HOOKS=(zsh_hook_probe)
+    zom-bg "say hi"'
+  local bg_line hook_sid spawn_sid tries=0
+  while (( tries < 200 )) && ! grep -q "argv=run" "$ZOM_MOCK_LOG" 2>/dev/null; do
+    sleep 0.1
+    tries=$(( tries + 1 ))
+  done
+  bg_line=$(grep '^bg|' "$DD/hooks.txt")
+  hook_sid=${bg_line#bg|}; hook_sid=${hook_sid%%|*}
+  spawn_sid=$(grep -o 'ses_zom-bg-[0-9-]*' "$ZOM_MOCK_LOG" | head -n1)
+  assert_eq "S27 hook sid equals spawned sid" "$hook_sid" "$spawn_sid"
+  assert_contains "S27 hook sees cwd" "$bg_line" "|$PWD"
+  # mini path with resume=main exposes the dedicated main session id
+  ZOM_CFG_BLOB='{"shell":{"resume":"main"}}' run_zsh 'zsh_hook_probe() { print -r -- "$ZOM_HOOK_KIND|$ZOM_HOOK_SID" >> "'$DD'/hooks2.txt" }
+    ZOM_SPAWN_HOOKS=(zsh_hook_probe)
+    __zom_launch_mini >/dev/null 2>&1'
+  assert_eq "S27 mini resume=main exposes main sid" "$(cat "$DD/hooks2.txt")" "mini|ses_zom-main"
+  cleanup
+}
+
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
@@ -739,7 +764,7 @@ for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload
          t_S15_zom_last_empty t_S16_outbox_cursor t_S16_outbox_malformed t_S17_zom_bg \
          t_S18_zom_config t_S19_agent_md_frontmatter t_S20_widget_always_cold_start t_S21_resource_idempotent \
          t_S22_argv_probe t_S23_sequence_conflict t_S24_regression_fixes \
-         t_S25_history_retention t_S26_unclaimed_hint; do
+         t_S25_history_retention t_S26_unclaimed_hint t_S27_hook_context; do
   print -r -- "[$t]"
   $t
 done

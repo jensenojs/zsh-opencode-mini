@@ -466,13 +466,21 @@ __zom_outbox_drain() {
 # it to know which sids to watch for completion, this function prints the sid
 # for attaching.
 # Spawn-hook dispatch: functions registered in the ZOM_SPAWN_HOOKS array are
-# called with no arguments before every spawn point (mini / zom-bg /
-# zom-last); a failing hook must not block the spawn.
+# called before every spawn point (mini / zom-bg / zom-last); a failing hook
+# must not block the spawn.
+# Mechanism/policy split: the plugin owns the spawn facts, hooks own what to
+# do with them. Each call receives the spawn context through dynamically
+# scoped env vars (visible only inside the hook, gone on return):
+#   ZOM_HOOK_KIND  mini | bg | last
+#   ZOM_HOOK_SID   session id when known at hook time (bg always; mini when
+#                  resuming the main session; empty otherwise)
+#   ZOM_HOOK_CWD   the directory the spawn happens in
 # Product boundary: zom core ships no terminal-state integration; consumers
 # (e.g. wezterm-attention) hook in via ZOM_SPAWN_HOOKS+=(fn) in their own
 # zsh config.
 typeset -gU ZOM_SPAWN_HOOKS
 __zom_run_spawn_hooks() {
+  local -x ZOM_HOOK_KIND=${1:-} ZOM_HOOK_SID=${2:-} ZOM_HOOK_CWD=$PWD
   local h
   for h in ${=ZOM_SPAWN_HOOKS:-}; do
     if (( $+functions[$h] )); then
@@ -498,8 +506,10 @@ zom-bg() {
     print -u2 -- "zom-bg: usage: zom-bg <prompt...>"
     return 1
   fi
-  __zom_run_spawn_hooks
   local sid="ses_zom-bg-${EPOCHSECONDS}-$$"
+  # sid exists before the hooks so consumers (e.g. wezterm-attention) can
+  # bind the coming background session to this pane's activity.
+  __zom_run_spawn_hooks bg "$sid"
   "$ZOM_BINARY" run -s "$sid" "$@" >/dev/null 2>&1 &
   local pid=$!   # capture before anything else can spawn — $! is the run process
   print -r -- "{\"sid\":\"$sid\",\"pid\":$pid,\"cwd\":\"$(__zom_json_escape "$PWD")\",\"started\":$EPOCHSECONDS}" \
@@ -614,7 +624,10 @@ __zom_launch_mini() {
   if ! __zom_mini_probe; then
     return 1   # loud: the probe already reported on stderr; do not exec
   fi
-  __zom_run_spawn_hooks
+  # The session id is knowable only when resuming the dedicated main session.
+  local hook_sid=""
+  [[ "$ZOM_RESUME" == main ]] && hook_sid="$ZOM_MAIN_SESSION"
+  __zom_run_spawn_hooks mini "$hook_sid"
   # The summon loop reuses one session; the entry ("▪ oc mini …") and exit
   # ("Session …") splash banners would stamp a fresh pair into scrollback on
   # every C-x. Hide them via the CLI-config env overlay — this plugin-owned
@@ -705,7 +718,8 @@ zom-last() {
     return 1
   fi
   print -- "zom-last: $last_failed"
-  __zom_run_spawn_hooks
+  # `run` creates a fresh session whose id is only known to opencode itself.
+  __zom_run_spawn_hooks last
   "$ZOM_BINARY" run "Explain and fix this failed command (run in the current directory): $last_failed"
 }
 
