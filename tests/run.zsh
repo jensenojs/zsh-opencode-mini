@@ -757,6 +757,38 @@ t_S27_hook_context() {
   cleanup
 }
 
+# S28: an external executable works as a spawn hook and inherits the exported
+# context (hook externalization: the consumer need not be a zsh function).
+t_S28_external_hook() {
+  sandbox
+  cat > "$TD/ext-hook" <<'EOF'
+#!/bin/zsh
+print -r -- "$ZOM_HOOK_KIND|$ZOM_HOOK_SID" >> "$ZOM_TEST_HOOK_OUT"
+EOF
+  chmod +x "$TD/ext-hook"
+  ZOM_TEST_HOOK_OUT="$DD/ext.txt" run_zsh 'ZOM_SPAWN_HOOKS=("'"$TD"'/ext-hook"); zom-bg "hi"'
+  local tries=0
+  while (( tries < 200 )) && [[ ! -s "$DD/ext.txt" ]]; do
+    sleep 0.1; tries=$(( tries + 1 ))
+  done
+  assert_contains "S28 external hook ran with kind" "$(cat "$DD/ext.txt")" "bg|"
+  assert_contains "S28 external hook got sid" "$(cat "$DD/ext.txt")" "ses_zom-bg-"
+  cleanup
+}
+
+# S29: pathological-growth sentinel warns about an oversized history file.
+t_S29_size_sentinel() {
+  sandbox
+  mkdir -p "$DD"
+  # 10 MB + 1 byte of junk — dd from /dev/zero, fast enough at this size
+  dd if=/dev/zero of="$DD/history-2026-10.jsonl" bs=1048576 count=11 2>/dev/null
+  local out
+  out=$(run_zsh ':' 2>&1)
+  assert_contains "S29 oversized history warned" "$out" 'over 10 MB'
+  assert_contains "S29 warning names the file" "$out" 'history-2026-10.jsonl'
+  cleanup
+}
+
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
@@ -764,7 +796,8 @@ for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload
          t_S15_zom_last_empty t_S16_outbox_cursor t_S16_outbox_malformed t_S17_zom_bg \
          t_S18_zom_config t_S19_agent_md_frontmatter t_S20_widget_always_cold_start t_S21_resource_idempotent \
          t_S22_argv_probe t_S23_sequence_conflict t_S24_regression_fixes \
-         t_S25_history_retention t_S26_unclaimed_hint t_S27_hook_context; do
+         t_S25_history_retention t_S26_unclaimed_hint t_S27_hook_context \
+         t_S28_external_hook t_S29_size_sentinel; do
   print -r -- "[$t]"
   $t
 done

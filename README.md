@@ -95,9 +95,11 @@ under `~/.config/opencode/`); the plugin never writes configuration.
 
 ### Spawn hooks
 
-Functions registered in `ZOM_SPAWN_HOOKS+=(fn)` run before every opencode
-spawn (`zom` widget / `zom-bg` / `zom-last`). The plugin owns the spawn
-facts; the hook decides what to do with them. Each call receives:
+Functions or executables registered in `ZOM_SPAWN_HOOKS+=(fn)` run before
+every opencode spawn (`zom` widget / `zom-bg` / `zom-last`). The plugin owns
+the spawn facts; the hook decides what to do with them. Each call receives
+exported env vars (external executables inherit them, zsh functions see them
+for the duration of the call):
 
 - `ZOM_HOOK_KIND` — `mini`, `bg`, or `last`
 - `ZOM_HOOK_SID` — session id when known at hook time (always for `bg`;

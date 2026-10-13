@@ -294,6 +294,21 @@ if [[ -n "$ZOM_HISTORY_RETAIN" && -d "$ZOM_DATA_DIR" ]]; then
   } 2>/dev/null
 fi
 
+# Pathological-growth sentinel, once per shell. A runaway loop can flood the
+# monthly file faster than retention can age it out; past a fixed ceiling the
+# file is almost certainly garbage, so surface it instead of letting the store
+# grow silently. Warn-only: deleting live data on a heuristic would be worse.
+# knockout: fixed 10 MB ceiling, make it configurable if a real workload ever
+# legitimately exceeds it
+if [[ -d "$ZOM_DATA_DIR" ]]; then
+  for _ZOM_F in "$ZOM_DATA_DIR"/history-*.jsonl(N); do
+    if (( $(wc -c < "$_ZOM_F" 2>/dev/null || echo 0) > 10485760 )); then
+      print -u2 -- "zsh-opencode-mini: ${_ZOM_F:t} is over 10 MB — likely a runaway producer; inspect and trim it"
+    fi
+  done
+  unset _ZOM_F
+fi
+
 # ---- JSON helper ----
 # Hand-rolled escaping, zero dependencies. Covers JSON structural chars
 # and common control characters.
@@ -465,16 +480,19 @@ __zom_outbox_drain() {
 # unreachable from mini. bg.jsonl is the spawn ledger: the opencode side reads
 # it to know which sids to watch for completion, this function prints the sid
 # for attaching.
-# Spawn-hook dispatch: functions registered in the ZOM_SPAWN_HOOKS array are
-# called before every spawn point (mini / zom-bg / zom-last); a failing hook
-# must not block the spawn.
+# Spawn-hook dispatch: entries in the ZOM_SPAWN_HOOKS array run before every
+# spawn point (mini / zom-bg / zom-last); a failing hook must not block the
+# spawn.
 # Mechanism/policy split: the plugin owns the spawn facts, hooks own what to
-# do with them. Each call receives the spawn context through dynamically
-# scoped env vars (visible only inside the hook, gone on return):
+# do with them. Entries may be zsh functions or external executables; both
+# receive the spawn context through exported env vars (dynamically scoped —
+# set for the hook call, gone on return):
 #   ZOM_HOOK_KIND  mini | bg | last
 #   ZOM_HOOK_SID   session id when known at hook time (bg always; mini when
 #                  resuming the main session; empty otherwise)
 #   ZOM_HOOK_CWD   the directory the spawn happens in
+# Env vars rather than argv: the contract grows without every consumer
+# re-signing, and external executables inherit the same environment.
 # Product boundary: zom core ships no terminal-state integration; consumers
 # (e.g. wezterm-attention) hook in via ZOM_SPAWN_HOOKS+=(fn) in their own
 # zsh config.
@@ -483,7 +501,7 @@ __zom_run_spawn_hooks() {
   local -x ZOM_HOOK_KIND=${1:-} ZOM_HOOK_SID=${2:-} ZOM_HOOK_CWD=$PWD
   local h
   for h in ${=ZOM_SPAWN_HOOKS:-}; do
-    if (( $+functions[$h] )); then
+    if (( $+functions[$h] || $+commands[$h] )) || [[ -x "$h" ]]; then
       # Hooks run on behalf of the interactive user, but one spawn point is a
       # ZLE widget — and inside a widget `[[ -t 0 ]]` is false even in a real
       # terminal (zsh runs widgets with stdin detached). Hooks that probe the

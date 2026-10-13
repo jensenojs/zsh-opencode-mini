@@ -87,9 +87,10 @@ use = ["zsh-opencode-mini.plugin.zsh"]
 
 ### spawn 钩子
 
-在 `ZOM_SPAWN_HOOKS+=(fn)` 里登记的函数会在每次 opencode 拉起前运行
-（`zom` 按键 / `zom-bg` / `zom-last`）。插件负责提供 spawn 现场的事实，
-钩子决定拿这些事实做什么。每次调用能读到：
+在 `ZOM_SPAWN_HOOKS+=(fn)` 里登记的 zsh 函数或可执行文件会在每次
+opencode 拉起前运行（`zom` 按键 / `zom-bg` / `zom-last`）。插件负责提供
+spawn 现场的事实，钩子决定拿这些事实做什么。每次调用通过环境变量传值
+（可执行文件直接继承环境，zsh 函数在调用期间可见）：
 
 - `ZOM_HOOK_KIND` — `mini`、`bg` 或 `last`
 - `ZOM_HOOK_SID` — 钩子时刻已知的 session id（`bg` 一定有；`mini` 仅在
