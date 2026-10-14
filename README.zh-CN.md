@@ -8,21 +8,29 @@
 
 ## 安装
 
+分两半：opencode 侧（agent 与 companion 插件，AI 读 shell 历史靠它们）
+和 zsh 侧（记录 + 键位）。
+
 ```zsh
 git clone https://github.com/jensenojs/zsh-opencode-mini
 cd zsh-opencode-mini
 
-# 1+2. opencode 侧：agent 与插件（AI 能力的来源）
+# opencode 侧：软链，之后更新跟随仓库
 mkdir -p ~/.config/opencode/agent ~/.config/opencode/plugins
 ln -sf "$PWD/agent/zsh-companion.md" ~/.config/opencode/agent/zsh-companion.md
 ln -sf "$PWD/opencode-plugin/zom-companion.js" ~/.config/opencode/plugins/zom-companion.js
 
-# 3. zsh 侧：记录 + 键位
+# mini 用的二进制（opencode 的 zom fork，从 GitHub Releases 装）
+bash scripts/install-zom-binary.sh
+
+# zsh 侧
 echo "source $PWD/zsh-opencode-mini.plugin.zsh" >> ~/.zshrc
 ```
 
-任何 zsh 插件管理器都可用（`<name>.plugin.zsh` 约定）——以
-[sheldon](https://github.com/rossmacarthur/sheldon) 为例：
+用插件管理器时仓库由管理器持有：对着它拉下来的目录做同样的两个软链，
+zsh 侧按管理器的方式加载。
+
+[sheldon](https://github.com/rossmacarthur/sheldon)：
 
 ```toml
 [plugins.zsh-opencode-mini]
@@ -30,7 +38,18 @@ github = "jensenojs/zsh-opencode-mini"
 use = ["zsh-opencode-mini.plugin.zsh"]
 ```
 
-**卸载**：删掉 source 行和两个软链；可选
+oh-my-zsh：
+
+```zsh
+git clone https://github.com/jensenojs/zsh-opencode-mini \
+  ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-opencode-mini
+# 然后在 ~/.zshrc 的 plugins=(...) 里加 zsh-opencode-mini
+```
+
+zinit：`zinit light jensenojs/zsh-opencode-mini`
+antidote：把 `jensenojs/zsh-opencode-mini` 加进插件清单文件。
+
+**卸载**：删掉 source 行（或管理器条目）和两个软链；可选
 `rm -rf ~/.local/share/zsh-opencode-mini ~/.config/zsh-opencode-mini`。
 没有其它残留：不覆盖 widget、不动 prompt。
 
@@ -68,9 +87,12 @@ use = ["zsh-opencode-mini.plugin.zsh"]
 | `shell.passthrough` | `"on"` | 未绑定键写入 `passthrough.<pid>.keys.log`（滚动），mini 不退出；`"off"` 恢复吞掉 |
 | `shell.passthroughKeys` | `""` | 逗号分隔的键位（如 `"ctrl+r"`），命中时退出 mini 并把字节回放给 shell |
 | `shell.historyRetainMonths` | `6` | 按月 history 文件超过这个月数在 shell 启动时删除；`"off"` 全部保留 |
+| `shell.osc` | `"on"` | 每条命令的 OSC 7777 汇报帧（终端侧接收方的私有协议）；`"off"` 同时省掉每条命令一次 base64 fork |
 | `shell.failurePrefill` | 内置模板 | 失败后预填的模板（`{cmd}` `{exit}` `{cwd}`；`"off"` 关闭） |
+| `shell.model` | `""` | 给 mini 会话固定模型（`provider/model#variant`）；空则跟随全局默认 |
 | `companion.failureTtlSeconds` | `600` | 失败信号对 AI 保持「新鲜」的秒数 |
 | `companion.recentDefaultN` | `20` | `zom_context` 工具 `query=recent` 返回的行数 |
+| `companion.repeatFailureThreshold` | `3` | 同一条命令一天内重复失败到这个次数就往 outbox 丢一条提示（`0` 关闭） |
 | `recipes.<name>`（顶层） | — | 事件驱动的声明式模型调用（`failure` / `bg-done` / `manual`），名字须匹配 `^[A-Za-z0-9_-]+$`，见示例配置 |
 
 配置在插件加载时读一次，改完开新 shell 生效。`zom-config` 可查看全部生效值

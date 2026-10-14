@@ -53,6 +53,10 @@
     // Monthly history files older than this many months are deleted when a
     // shell starts. "off" keeps everything.
     "historyRetainMonths": 6,
+    // Per-command OSC report (ESC ] 7777 ; zom ; v1 ; <base64 json> BEL).
+    // A private protocol for terminal-side receivers; terminals without one
+    // swallow it silently. "off" also saves one base64 fork per command.
+    "osc": "on",
     // Prompt pre-filled (not sent) in the composer after a failed command,
     // within failureTtlSeconds. Each failure prefills once — seen is
     // consumed, whether or not you sent it; a new failure prefills again.

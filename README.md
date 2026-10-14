@@ -12,20 +12,28 @@ Interaction shape credited to [zsh-kimi-cli](https://github.com/teddy0207/zsh-ki
 
 ## Install
 
+Two halves: the opencode side (the agent and companion plugin that let the
+AI read your shell history) and the zsh side (recording + keybind).
+
 ```zsh
 git clone https://github.com/jensenojs/zsh-opencode-mini
 cd zsh-opencode-mini
 
-# 1+2. opencode side: the agent and its plugin (what makes the AI aware)
+# opencode side — symlinks, so updates follow the repo
 mkdir -p ~/.config/opencode/agent ~/.config/opencode/plugins
 ln -sf "$PWD/agent/zsh-companion.md" ~/.config/opencode/agent/zsh-companion.md
 ln -sf "$PWD/opencode-plugin/zom-companion.js" ~/.config/opencode/plugins/zom-companion.js
 
-# 3. zsh side: recording + keybind
+# the mini binary (zom fork of opencode, from GitHub Releases)
+bash scripts/install-zom-binary.sh
+
+# zsh side
 echo "source $PWD/zsh-opencode-mini.plugin.zsh" >> ~/.zshrc
 ```
 
-Any zsh plugin manager works too (`<name>.plugin.zsh` convention) — with
+With a plugin manager, the manager owns the clone: run the same two symlinks
+against wherever it put the repo, then load the plugin its way.
+
 [sheldon](https://github.com/rossmacarthur/sheldon):
 
 ```toml
@@ -34,7 +42,19 @@ github = "jensenojs/zsh-opencode-mini"
 use = ["zsh-opencode-mini.plugin.zsh"]
 ```
 
-**Uninstall**: remove the source line and the two symlinks; optionally
+oh-my-zsh:
+
+```zsh
+git clone https://github.com/jensenojs/zsh-opencode-mini \
+  ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-opencode-mini
+# add zsh-opencode-mini to plugins=(...) in ~/.zshrc
+```
+
+zinit: `zinit light jensenojs/zsh-opencode-mini`
+antidote: add `jensenojs/zsh-opencode-mini` to your plugins file.
+
+**Uninstall**: remove the source line (or the manager entry) and the two
+symlinks; optionally
 `rm -rf ~/.local/share/zsh-opencode-mini ~/.config/zsh-opencode-mini`.
 Nothing else is touched: no widget overwrite, no prompt change.
 
@@ -73,9 +93,12 @@ Optional. Copy [`config.example.jsonc`](config.example.jsonc) to
 | `shell.passthrough` | `"on"` | unbound keys are logged to `passthrough.<pid>.keys.log` instead of killing mini; `"off"` swallows them |
 | `shell.passthroughKeys` | `""` | comma-separated strokes (e.g. `"ctrl+r"`) that exit mini and replay into the shell |
 | `shell.historyRetainMonths` | `6` | monthly history files older than this are deleted at shell start; `"off"` keeps everything |
+| `shell.osc` | `"on"` | per-command OSC 7777 report frame (a private protocol for terminal-side receivers); `"off"` also saves one base64 fork per command |
 | `shell.failurePrefill` | built-in | template pre-filled after a failure (`{cmd}` `{exit}` `{cwd}`; `"off"` disables) |
+| `shell.model` | `""` | pin a model for mini sessions (`provider/model#variant`); empty follows your global default |
 | `companion.failureTtlSeconds` | `600` | how long a failure stays "fresh" for the AI |
 | `companion.recentDefaultN` | `20` | lines `zom_context` returns for `query=recent` |
+| `companion.repeatFailureThreshold` | `3` | identical failures of one command within a day that trigger one outbox hint (`0` disables) |
 | `recipes.<name>` (top level) | — | declarative model calls on events (`failure` / `bg-done` / `manual`); the name must match `^[A-Za-z0-9_-]+$`; see the example config |
 
 Config is read once when the plugin loads — open a new shell after editing.

@@ -750,7 +750,10 @@ t_S27_hook_context() {
   assert_eq "S27 hook sid equals spawned sid" "$hook_sid" "$spawn_sid"
   assert_contains "S27 hook sees cwd" "$bg_line" "|$PWD"
   # mini path with resume=main exposes the dedicated main session id
-  ZOM_CFG_BLOB='{"shell":{"resume":"main"}}' run_zsh 'zsh_hook_probe() { print -r -- "$ZOM_HOOK_KIND|$ZOM_HOOK_SID" >> "'$DD'/hooks2.txt" }
+  write_config <<'EOF'
+{"shell":{"resume":"main"}}
+EOF
+  run_zsh 'zsh_hook_probe() { print -r -- "$ZOM_HOOK_KIND|$ZOM_HOOK_SID" >> "'$DD'/hooks2.txt" }
     ZOM_SPAWN_HOOKS=(zsh_hook_probe)
     __zom_launch_mini >/dev/null 2>&1'
   assert_eq "S27 mini resume=main exposes main sid" "$(cat "$DD/hooks2.txt")" "mini|ses_zom-main"
@@ -861,6 +864,25 @@ t_S33_hook_stdin_tty() {
   cleanup
 }
 
+# S34: shell.osc=off suppresses the per-command OSC report entirely; an
+# invalid value warns and falls back to the default (on).
+t_S34_osc_switch() {
+  sandbox
+  write_config <<'EOF'
+{"shell":{"osc":"off"}}
+EOF
+  local out
+  out=$(run_command 'osc-probe' 'true')
+  assert_eq "S34 osc off emits no frame" "$out" ""
+  write_config <<'EOF'
+{"shell":{"osc":"bogus"}}
+EOF
+  out=$(run_command 'osc-probe' 'true' 2>&1)
+  assert_contains "S34 invalid osc warns" "$out" "shell.osc 'bogus' invalid"
+  assert_contains "S34 invalid osc falls back to on" "$out" $'\e]7777;zom;v1;'
+  cleanup
+}
+
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
@@ -870,7 +892,7 @@ for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload
          t_S22_argv_probe t_S23_sequence_conflict t_S24_regression_fixes \
          t_S25_history_retention t_S26_unclaimed_hint t_S27_hook_context \
          t_S28_external_hook t_S29_size_sentinel t_S30_notices t_S31_spawn_measurement \
-         t_S32_prefill_consumed_once t_S33_hook_stdin_tty; do
+         t_S32_prefill_consumed_once t_S33_hook_stdin_tty t_S34_osc_switch; do
   print -r -- "[$t]"
   $t
 done

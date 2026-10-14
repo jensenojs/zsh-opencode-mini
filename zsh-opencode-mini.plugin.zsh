@@ -40,6 +40,7 @@ __zom_cfg_load() {
     ZOM_CFG[passthrough]=""
     ZOM_CFG[passthroughKeys]=""
     ZOM_CFG[historyRetainMonths]=""
+    ZOM_CFG[osc]=""
     ZOM_CFG[failurePrefill]=""
     ZOM_CFG[model]=""
     ZOM_CFG[failureTtlSeconds]=""
@@ -59,6 +60,7 @@ __zom_cfg_load() {
     "ZOM_CFG[passthrough]="       + (($s.passthrough    // "") | @sh),
     "ZOM_CFG[passthroughKeys]="   + (($s.passthroughKeys // "") | @sh),
     "ZOM_CFG[historyRetainMonths]=" + (($s.historyRetainMonths // "") | @sh),
+    "ZOM_CFG[osc]="               + (($s.osc            // "") | @sh),
     "ZOM_CFG[failurePrefill]="    + (($s.failurePrefill // "") | @sh),
     "ZOM_CFG[model]="             + (($s.model          // "") | @sh),
     "ZOM_CFG[failureTtlSeconds]=" + ((.companion.failureTtlSeconds // "") | @sh),
@@ -92,6 +94,7 @@ typeset -gA ZOM_DEFAULTS=(
   [passthrough]="on"
   [passthroughKeys]=""
   [historyRetainMonths]="6"
+  [osc]="on"
   [failurePrefill]=$'上一条命令失败了（exit {exit}）：{cmd}\n帮我分析失败原因并给出修复建议'
   [model]=""
   [failureTtlSeconds]="600"
@@ -204,6 +207,18 @@ elif ! __zom_is_uint "$ZOM_REPLAY_LIMIT" || [[ "$ZOM_REPLAY_LIMIT" -lt 1 ]]; the
   print -u2 -- "zsh-opencode-mini: shell.replayLimit '$ZOM_REPLAY_LIMIT' invalid (positive integer) — using ${ZOM_DEFAULTS[replayLimit]}."
   ZOM_REPLAY_LIMIT="${ZOM_DEFAULTS[replayLimit]}"
 fi
+# shell.osc "on" (default) | "off" — off skips the per-command OSC report
+# entirely (also saves its base64 fork). The frame is a private protocol;
+# terminals without a receiver swallow it, so on is safe everywhere, but off
+# is the honest choice when you know nothing consumes it.
+ZOM_OSC=${ZOM_CFG[osc]}
+case "$ZOM_OSC" in
+  on | "" | null) ZOM_OSC="${ZOM_DEFAULTS[osc]}" ;;   # absent -> default
+  off)            : ;;
+  *)
+    print -u2 -- "zsh-opencode-mini: shell.osc '$ZOM_OSC' invalid (on|off) — using ${ZOM_DEFAULTS[osc]}."
+    ZOM_OSC="${ZOM_DEFAULTS[osc]}" ;;
+esac
 (( $+ZOM_OSC_CODE )) || typeset -gr ZOM_OSC_CODE="7777"         # private OSC code; may change when the fork lands
 
 # Failure→prefill TTL (seconds). Shared with the opencode-side companion
@@ -382,13 +397,14 @@ __zom_precmd() {
   # 4) OSC report: ESC ] CODE ; zom ; v1 ; <base64(json)> BEL
   #    base64-encoded payload so arbitrary bytes in command text cannot
   #    corrupt the OSC frame (warp uses hex for the same reason).
-  #    Emitted unconditionally: no receiver exists yet, the fork consumes
-  #    this format as-is (hole 1).
-  #    Cost note: this is one external process (base64) per command — the
-  #    tr is gone (parameter expansion strips base64's line wraps).
-  local b64
-  b64=${$(printf '%s' "$json" | base64)//$'\n'/}
-  printf '\e]%s;zom;v1;%s\a' "$ZOM_OSC_CODE" "$b64"
+  #    shell.osc=off skips this entirely, including the base64 fork below —
+  #    the frame is a private protocol and terminals without a receiver
+  #    swallow it silently.
+  if [[ "$ZOM_OSC" == on ]]; then
+    local b64
+    b64=${$(printf '%s' "$json" | base64)//$'\n'/}
+    printf '\e]%s;zom;v1;%s\a' "$ZOM_OSC_CODE" "$b64"
+  fi
 }
 
 # ---- outbox: the cross-side return channel ----
@@ -909,6 +925,7 @@ zom-config() {
   __zom_cfg_line passthrough    "$ZOM_PASSTHROUGH"
   __zom_cfg_line passthroughKeys "$ZOM_PASSTHROUGH_KEYS"
   __zom_cfg_line historyRetainMonths "${ZOM_HISTORY_RETAIN:-off}"
+  __zom_cfg_line osc            "$ZOM_OSC"
   __zom_cfg_line failurePrefill "$ZOM_FAILURE_PREFILL_TMPL"
   __zom_cfg_line model          "${ZOM_CFG[model]}"
   print -r -- "companion (read by the opencode-side plugin, per session):"
