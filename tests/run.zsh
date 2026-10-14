@@ -825,6 +825,23 @@ t_S31_spawn_measurement() {
   cleanup
 }
 
+# S32: a failure prefills once — seen is consumed, sent or not. A new
+# failure (new epoch) prefills again.
+t_S32_prefill_consumed_once() {
+  sandbox
+  run_command 'git push --force' 'false'
+  run_zsh 'zom x' >/dev/null 2>&1
+  run_zsh 'zom x' >/dev/null 2>&1
+  log=$(cat "$ZOM_MOCK_LOG")
+  assert_eq "S32 prefill consumed once" "$(grep -c -- '--prefill' <<<"$log")" "1"
+  sleep 1   # epochs are second-granular; a same-second failure shares the epoch
+  run_command 'git push --force' 'false'
+  run_zsh 'zom x' >/dev/null 2>&1
+  log=$(cat "$ZOM_MOCK_LOG")
+  assert_eq "S32 new failure prefills again" "$(grep -c -- '--prefill' <<<"$log")" "2"
+  cleanup
+}
+
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
@@ -833,7 +850,8 @@ for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload
          t_S18_zom_config t_S19_agent_md_frontmatter t_S20_widget_always_cold_start t_S21_resource_idempotent \
          t_S22_argv_probe t_S23_sequence_conflict t_S24_regression_fixes \
          t_S25_history_retention t_S26_unclaimed_hint t_S27_hook_context \
-         t_S28_external_hook t_S29_size_sentinel t_S30_notices t_S31_spawn_measurement; do
+         t_S28_external_hook t_S29_size_sentinel t_S30_notices t_S31_spawn_measurement \
+         t_S32_prefill_consumed_once; do
   print -r -- "[$t]"
   $t
 done

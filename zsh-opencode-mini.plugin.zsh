@@ -565,9 +565,16 @@ __zom_failure_prefill() {
   # Directory match: a failure observed in another working directory must not
   # surface here, even inside the TTL window (different project, different bug).
   [[ "$cwd" == "$PWD" ]] || return 1
+  # Consume-once: the prefill is a suggestion — seen is consumed, whether or
+  # not the user actually sent it. Record the failure's epoch when we prefill
+  # and never prefill the same failure again; a NEW failure carries a new
+  # epoch and prefills as usual.
+  local pf="$ZOM_DATA_DIR/prefilled-epoch"
+  [[ -f "$pf" && $(<"$pf") == "$epoch" ]] && return 1
   local out=${ZOM_FAILURE_PREFILL_TMPL//\{cmd\}/$cmd}
   out=${out//\{exit\}/$exit_code}
   out=${out//\{cwd\}/$PWD}
+  print -r -- "$epoch" > "$pf"
   printf -- '%s' "$out"
 }
 
