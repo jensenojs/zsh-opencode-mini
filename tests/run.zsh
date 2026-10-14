@@ -842,6 +842,25 @@ t_S32_prefill_consumed_once() {
   cleanup
 }
 
+# S33: hooks read stdin from $TTY (the real terminal device), never /dev/tty —
+# the ctty alias's ttyname(3) is the literal string "/dev/tty" on macOS and
+# breaks consumers that identify their terminal by path (wezterm-attention's
+# claim refused with "WEZTERM_PANE was inherited" until this). An unusable TTY
+# falls back to the inherited stdin instead of skipping the hook.
+t_S33_hook_stdin_tty() {
+  sandbox
+  print -r -- "REALTTY-MARK" > "$TD/fake-tty"
+  run_zsh 'zsh_hook_stdin() { cat > "'$DD'/stdin.txt" }
+    TTY="'$TD'/fake-tty" ZOM_SPAWN_HOOKS=(zsh_hook_stdin)
+    zom-bg "hi"' </dev/null
+  assert_eq "S33 hook stdin comes from TTY" "$(cat "$DD/stdin.txt")" "REALTTY-MARK"
+  run_zsh 'zsh_hook_stdin() { cat > "'$DD'/stdin2.txt" }
+    TTY="'$TD'/gone" ZOM_SPAWN_HOOKS=(zsh_hook_stdin)
+    zom-bg "hi"' </dev/null
+  assert_eq "S33 unusable TTY falls back to inherited stdin" "$(cat "$DD/stdin2.txt")" ""
+  cleanup
+}
+
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
@@ -851,7 +870,7 @@ for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload
          t_S22_argv_probe t_S23_sequence_conflict t_S24_regression_fixes \
          t_S25_history_retention t_S26_unclaimed_hint t_S27_hook_context \
          t_S28_external_hook t_S29_size_sentinel t_S30_notices t_S31_spawn_measurement \
-         t_S32_prefill_consumed_once; do
+         t_S32_prefill_consumed_once t_S33_hook_stdin_tty; do
   print -r -- "[$t]"
   $t
 done

@@ -502,12 +502,15 @@ __zom_run_spawn_hooks() {
       # ZLE widget — and inside a widget `[[ -t 0 ]]` is false even in a real
       # terminal (zsh runs widgets with stdin detached). Hooks that probe the
       # terminal (wezterm-attention's claim refuses with "unsafe_tty") would
-      # misfire on a widget-spawned mini, so reconnect stdin to the real
-      # terminal device. Where no controlling tty exists at all (cron, tests)
-      # the redirect itself fails and would skip the hook — probe first and
-      # fall back to the inherited stdin.
-      if ( : </dev/tty ) 2>/dev/null; then
-        "$h" </dev/tty || {
+      # misfire on a widget-spawned mini, so reconnect stdin to the terminal.
+      # Redirect from the real device ($TTY), not /dev/tty: on macOS opening
+      # /dev/tty yields the ctty alias whose ttyname(3) is literally
+      # "/dev/tty" (rdev 2,0), so a consumer identifying its terminal by path
+      # mismatches against the mux's tty_name and refuses — that is the
+      # "WEZTERM_PANE was inherited" variant. Where no terminal exists at all
+      # (cron, tests) fall back to the inherited stdin.
+      if [[ -n "${TTY:-}" ]] && ( : < "$TTY" ) 2>/dev/null; then
+        "$h" < "$TTY" || {
           # A hook that fails produces no output of its own — without this
           # notice the user's customized scenario silently stops working.
           __zom_notice hook-failure "spawn hook $h exited $? (kind=$ZOM_HOOK_KIND); it did not run"
