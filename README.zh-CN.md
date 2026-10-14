@@ -1,6 +1,6 @@
 # zsh-opencode-mini
 
-在 shell 里按 `C-x` 唤起 [opencode](https://opencode.ai) mini 助手。插件在后台记录你的命令（文本、退出码、目录），并给 AI 一条懒加载、结构化的查阅通道——不用粘贴任何东西，AI 就知道你的现场。
+在 shell 里按 `C-x` 唤起 [opencode](https://opencode.ai) mini 助手。插件在后台记录你的命令（文本、退出码、目录），并给 AI 一条懒加载、结构化的查阅通道，不用粘贴任何东西，AI 就知道你的现场。
 
 交互形状借鉴自 [zsh-kimi-cli](https://github.com/teddy0207/zsh-kimi-cli)，在此致谢。
 
@@ -60,8 +60,8 @@ antidote：把 `jensenojs/zsh-opencode-mini` 加进插件清单文件。
 | 按键 / 命令 | 作用 |
 |---|---|
 | `C-x` | 打开/关闭 AI mini 会话（`ses_zom-main`，配自建二进制可感知目录） |
-| `ctrl+z`（mini 内） | 干净退出 mini——与 `C-x` 收起同一条路径；再按 `C-x` 召回 |
-| 其它未绑定键（mini 内） | 交还 shell 生效——比如 `ctrl+o` 落到 zsh 提示符执行 |
+| `ctrl+z`（mini 内） | 干净退出 mini，与 `C-x` 收起同一条路径；再按 `C-x` 召回 |
+| 其它未绑定键（mini 内） | 交还 shell 生效，比如 `ctrl+o` 落到 zsh 提示符执行 |
 | `zom [args]` | 脚本可用的启动器 |
 | `zom-last` | 把最近失败的命令交给 `opencode run` |
 | `zom-bg <prompt>` | 后台长任务；完成通知以 `zom:` 行送达 |
@@ -69,7 +69,7 @@ antidote：把 `jensenojs/zsh-opencode-mini` 加进插件清单文件。
 | `zom-config` | 打印全部配置项的生效值与来源（只读） |
 
 命令失败后，输入框会预填一条分析提示词（你确认后才发送）。AI 也能用
-`zom_context` 工具自己查历史——新鲜的才注入，没问的不加载。
+`zom_context` 工具自己查历史，新鲜的才注入，没问的不加载。
 
 ## 配置
 
@@ -93,7 +93,7 @@ antidote：把 `jensenojs/zsh-opencode-mini` 加进插件清单文件。
 | `companion.failureTtlSeconds` | `600` | 失败信号对 AI 保持「新鲜」的秒数 |
 | `companion.recentDefaultN` | `20` | `zom_context` 工具 `query=recent` 返回的行数 |
 | `companion.repeatFailureThreshold` | `3` | 同一条命令一天内重复失败到这个次数就往 outbox 丢一条提示（`0` 关闭） |
-| `recipes.<name>`（顶层） | — | 事件驱动的声明式模型调用（`failure` / `bg-done` / `manual`），名字须匹配 `^[A-Za-z0-9_-]+$`，见示例配置 |
+| `recipes.<name>`（顶层） | 空 | 事件驱动的声明式模型调用（`failure` / `bg-done` / `manual`），名字须匹配 `^[A-Za-z0-9_-]+$`，见示例配置 |
 
 配置在插件加载时读一次，改完开新 shell 生效。`zom-config` 可查看全部生效值
 （含装在 `~/.config/opencode/` 下的部件状态）；插件绝不写任何配置文件。
@@ -109,7 +109,7 @@ antidote：把 `jensenojs/zsh-opencode-mini` 加进插件清单文件。
   `notices.jsonl`；companion 在下一次会话把它 drain 进 context 注入，
   日常使用中感知不到的状态由模型主动提起，不会无声烂掉。
 - companion 还会统计同一天内同一条命令的失败次数，到阈值往 outbox 丢
-  一条提示——每次失败你看得见，次数你看不见。
+  一条提示：每次失败你看得见，次数你看不见。
 - opencode 插件 API 漂移时大声拒绝加载（锚定最新 v2）。
 
 ### spawn 钩子
@@ -119,10 +119,10 @@ opencode 拉起前运行（`zom` 按键 / `zom-bg` / `zom-last`）。插件负�
 spawn 现场的事实，钩子决定拿这些事实做什么。每次调用通过环境变量传值
 （可执行文件直接继承环境，zsh 函数在调用期间可见）：
 
-- `ZOM_HOOK_KIND` — `mini`、`bg` 或 `last`
-- `ZOM_HOOK_SID` — 钩子时刻已知的 session id（`bg` 一定有；`mini` 仅在
+- `ZOM_HOOK_KIND`：`mini`、`bg` 或 `last`
+- `ZOM_HOOK_SID`：钩子时刻已知的 session id（`bg` 一定有；`mini` 仅在
   `resume: "main"` 时有；其余为空）
-- `ZOM_HOOK_CWD` — spawn 发生的目录
+- `ZOM_HOOK_CWD`：spawn 发生的目录
 
 钩子的 stdin 接的是真实终端（召唤 widget 的 stdin 不是 tty，不做这一步
 探测终端的钩子会误判）。钩子失败不会阻塞 spawn，但会记一条 notice，
