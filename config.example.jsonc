@@ -63,6 +63,12 @@
     // Placeholders: {cmd} {exit} {cwd}.
     // Omit for the built-in Chinese template; "off" disables the prefill.
     "failurePrefill": null,
+    // Keep a bounded stderr tail (<dataDir>/stderr-tail.log, ~256 KB window)
+    // via one resident tee process, and store the tail of a failed command's
+    // stderr (last ~20 lines, 4 KB cap) into last-failure.json so recipes and
+    // zom_context can see WHY it failed. stderr still reaches the terminal
+    // byte for byte. "off" removes the tee and the stderr field.
+    "stderrCapture": "on",
     // Optional model pin, "provider/model#variant" — e.g.
     // "zhipuai-coding-plan/glm-5.3-flash#low". Empty follows the global
     // default model untouched. mini has no variant-only flag.
@@ -89,7 +95,9 @@
     //               finished; {sid} and {cwd} are filled)
     //               | "manual"  (the agent gets a zom_recipe_<name> tool)
     //   model       "provider/model-id" — the model that runs the prompt
-    //   prompt      template; {cmd} {exit} {cwd} are filled from the event
+    //   prompt      template; {cmd} {exit} {cwd} are filled from the event,
+    //               plus {stderr} for on:"failure" (the bounded stderr tail,
+    //               "" when capture is off)
     //   deliver     "next-session" (injected into the next mini session,
     //               tagged [zom:<name>], expires after ttlSeconds)
     //               | "outbox" (one line in outbox.jsonl, shown by the shell

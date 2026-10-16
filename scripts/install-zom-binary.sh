@@ -39,6 +39,9 @@ mkdir -p "$DEST"
 TMP=$(mktemp)
 curl -fL --progress-bar "$URL" -o "$TMP"
 chmod +x "$TMP"
+# 必须落新文件再 mv：原地 cp 覆盖已签名二进制（同一 inode 截断重写）会让
+# macOS Taskgated 拿内核缓存的旧签名比对失败，exec 时 SIGKILL (rc=137)。
+# 2026-10-16 实测，mv 换 inode 即愈。
 mv "$TMP" "$DEST/opencode-zom"
 
 echo "==> installed: $DEST/opencode-zom ($("$DEST/opencode-zom" --version 2>/dev/null | head -1))"

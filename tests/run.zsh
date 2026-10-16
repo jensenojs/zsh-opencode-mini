@@ -41,6 +41,21 @@
 #         tail line waits for completion
 #     S17 zom-bg: sid, ledger, background run -s (never --standalone),
 #         empty-prompt rejection
+#     S35 stderr tail capture: failure signal carries the bounded tail (ESC
+#         stripped, jq-valid), capture off -> empty field, success still
+#         flushes, over-cap log truncated after one command
+#     S36 bg-done drain skip: outbox records injected by the companion
+#         (bg-injected.json within TTL) are consumed silently, cursor still
+#         advances, stale markers deliver
+#     S37 stderr dual mode: reachable pane -> scrollback fetch (no tee, no
+#         log), dead pane / no wezterm / no TTY -> tee or empty; mode picked
+#         once at source; pane+tty stamped on failure records
+#     S38 failure tty scope: a success in one terminal must not flush or
+#         surface another terminal's failure (prefill, zom-last); legacy
+#         no-tty records stay global-latest on read and flush
+#     S39 hook registration: file-mode scripts dispatch phantom preexecs per
+#         line (empty $1) — the plugin ignores them, the recorded cmd
+#         survives; hook arrays are idempotent under double sourcing
 #
 #   NOT automated (declared boundary): the real keystroke→ZLE→widget→zle -I
 #   chain requires a live interactive shell; zsh's hook invocation semantics
@@ -56,6 +71,11 @@ MOCKBIN="$ROOT/tests/bin"
 PASS=0
 FAIL=0
 TD=
+
+# The operator's shell may carry a live WEZTERM_PANE (this suite is normally
+# launched from inside WezTerm). Every scenario that needs a pane id sets it
+# explicitly; defaulting to absence keeps mode-resolution cells deterministic.
+unset WEZTERM_PANE
 
 # --- tiny assert helpers ---------------------------------------------------
 # NOTE: PASS=$((PASS+1)) instead of ((PASS++)) — the postfix form evaluates to
@@ -825,6 +845,12 @@ t_S31_spawn_measurement() {
   [[ -f "$sf" ]] || { (( FAIL++ )); print -r -- "  FAIL  S31 spawns.jsonl written: file missing"; cleanup; return }
   assert_eq "S31 one line per spawn" "$(grep -c '' "$sf")" "2"
   assert_eq "S31 kind recorded" "$(grep -c '"kind":"bg"' "$sf")" "2"
+  # summon identity: tty + cwd stamp (companion reads this back as "which
+  # shell summoned"); the sandbox shell has no TTY, so the field is empty
+  local head1
+  head1=$(head -n1 "$sf")
+  assert_contains "S31 summon tty recorded" "$head1" '"tty":""'
+  assert_contains "S31 summon cwd recorded" "$head1" "\"cwd\":\"$PWD\""
   cleanup
 }
 
@@ -883,6 +909,221 @@ EOF
   cleanup
 }
 
+# S35: stderr tail capture. The shape contract and both read paths run against
+# a fixture log standing in for what tee would have appended; the capture and
+# rotation cells source with a tty file so the plugin resolves tee mode for
+# real (fd 2 goes through tee to that file — no output flows there in these
+# bodies).
+t_S35_stderr_tail() {
+  sandbox
+  mkdir -p "$DD"
+  printf 'plain line\n\033[31mred line\033[0m\nlast line\n' > "$DD/stderr-tail.log"
+  : > "$TD/tty-cap"
+  PATH="$MOCKBIN:$PATH" zsh -f -c "TTY='$TD/tty-cap'; source '$PLUGIN'; __zom_preexec 'false-cmd'; false; __zom_precmd"
+  local f="$DD/last-failure.json" stderr_field
+  stderr_field=$(jq -r '.stderr' "$f")
+  assert_contains "S35 stderr tail captured"      "$stderr_field" "plain line"
+  assert_contains "S35 stderr tail last line"     "$stderr_field" "last line"
+  assert_not_contains "S35 ESC stripped from tail" "$stderr_field" $'\033'
+  jq -e '.stderr and .exit == 1' "$f" >/dev/null \
+    && ok "S35 last-failure.json jq-valid (.stderr)" || bad "S35 last-failure.json jq-valid" "jq rejected $f"
+  # capture off: the field is written empty, no tail leaks in
+  write_config <<'EOF'
+{"shell":{"stderrCapture":"off"}}
+EOF
+  run_command 'false-cmd-2' 'false'
+  stderr_field=$(jq -r '.stderr' "$f")
+  assert_eq "S35 capture off leaves stderr empty" "$stderr_field" ""
+  # success still flushes the signal (existing behaviour, no regression)
+  run_command 'ok-cmd' 'true'
+  assert_file_missing "$f" "S35 success flushes signal"
+  rm -f "$XDG_CONFIG_HOME/zsh-opencode-mini/config.jsonc"   # back to defaults: rotation needs capture on
+  # rotation: the over-cap log is truncated back under the cap by the next
+  # precmd — only in tee mode (a channel-less shell must not trim a sibling's
+  # live log), so this cell runs with a TTY that resolves tee
+  dd if=/dev/zero of="$DD/stderr-tail.log" bs=1024 count=300 2>/dev/null
+  : > "$TD/tty-rot"
+  PATH="$MOCKBIN:$PATH" zsh -f -c "TTY='$TD/tty-rot'; source '$PLUGIN'; __zom_preexec 'rotate-cmd'; true; __zom_precmd"
+  local size
+  size=$(run_zsh "zstat +size '$DD/stderr-tail.log'")
+  (( size <= 262144 )) \
+    && ok "S35 over-cap log truncated" || bad "S35 over-cap log truncated" "size=$size"
+  cleanup
+}
+
+# S36: bg-done drain skip — outbox records whose sid the companion injected
+# into a live session (bg-injected.json, epoch within the failure TTL) are
+# consumed silently; other records and stale markers still print; the cursor
+# advances past every complete line either way.
+t_S36_drain_bg_skip() {
+  sandbox
+  mkdir -p "$DD"
+  print -r -- '{"id":"a","kind":"recipe","text":"normal hint"}' > "$DD/outbox.jsonl"
+  print -r -- '{"id":"b","kind":"bg-done","sid":"ses_zom-bg-injected","ok":true,"text":"bg injected finished"}' >> "$DD/outbox.jsonl"
+  print -r -- '{"id":"c","kind":"bg-done","sid":"ses_zom-bg-fresh","ok":true,"text":"bg fresh finished"}' >> "$DD/outbox.jsonl"
+  local epoch
+  epoch=$(run_zsh 'print -r -- $EPOCHSECONDS')
+  printf '{"ses_zom-bg-injected":%s}\n' "$epoch" > "$DD/bg-injected.json"
+  local out
+  out=$(run_zsh '__zom_outbox_drain' 2>&1)
+  assert_contains "S36 recipe line delivered"     "$out" "zom: normal hint"
+  assert_contains "S36 non-injected bg delivered" "$out" "zom: bg fresh finished"
+  assert_not_contains "S36 injected bg skipped"   "$out" "bg injected finished"
+  local cursor size
+  cursor=$(cat "$DD/outbox.cursor")
+  size=$(run_zsh "zstat +size '$DD/outbox.jsonl'")
+  assert_eq "S36 cursor past skipped line" "$cursor" "$size"
+  # a stale marker (epoch far outside the TTL) no longer silences
+  printf '{"ses_zom-bg-fresh":1}\n' > "$DD/bg-injected.json"
+  print -r -- '{"id":"d","kind":"bg-done","sid":"ses_zom-bg-fresh","ok":true,"text":"bg fresh again"}' >> "$DD/outbox.jsonl"
+  out=$(run_zsh '__zom_outbox_drain' 2>&1)
+  assert_contains "S36 stale marker still delivers" "$out" "zom: bg fresh again"
+  cleanup
+}
+
+# S37: stderr capture dual mode. The scrollback channel is exercised with a
+# fake wezterm on PATH (probe + fetch are the exact `cli get-text` calls the
+# plugin makes); the tee channel keeps S35's fixture-log approach because the
+# resident tee's write lands asynchronously — asserting on its timing would
+# be a flake, the mode resolution assert proves which branch installed.
+t_S37_stderr_dual_mode() {
+  sandbox
+  mkdir -p "$DD" "$TD/bin"
+  : > "$TD/fake-tty"   # tee's display write-back needs TTY to be an existing file
+  cat > "$TD/bin/wezterm" <<'FAKE'
+#!/bin/sh
+[ "$1" = "cli" ] || exit 2
+shift
+[ "$1" = "get-text" ] || exit 2
+shift
+[ "$1" = "--pane-id" ] || exit 2
+if [ "$2" = "7" ]; then
+  printf 'PANE-LINE-ONE\nPANE-LINE-TWO\n'
+  exit 0
+fi
+exit 1
+FAKE
+  chmod +x "$TD/bin/wezterm"
+  local mode
+  # TTY must be assigned in-body before source: zsh re-syncs the special $TTY
+  # parameter from the controlling terminal at startup, so an env-prefix TTY
+  # never reaches the plugin (WEZTERM_PANE is a normal parameter, env works)
+  run_src_tty() { zsh -f -c "TTY='$1'; source '$PLUGIN'; $2" }
+  # mode resolution: one probe at source, the three matrix cells
+  mode=$(PATH="$TD/bin:$PATH" WEZTERM_PANE=7 run_src_tty "" 'print -r -- "$ZOM_STDERR_MODE"')
+  assert_eq "S37 reachable pane resolves scrollback" "$mode" "scrollback"
+  mode=$(PATH="$TD/bin:$PATH" WEZTERM_PANE=8 run_src_tty "$TD/fake-tty" 'print -r -- "$ZOM_STDERR_MODE"')
+  assert_eq "S37 dead pane resolves tee" "$mode" "tee"
+  mode=$(run_src_tty "$TD/fake-tty" 'print -r -- "$ZOM_STDERR_MODE"')
+  assert_eq "S37 shell without pane id resolves tee" "$mode" "tee"
+  mode=$(run_src_tty "" 'print -r -- "$ZOM_STDERR_MODE"')
+  assert_eq "S37 tty-less shell resolves empty" "$mode" ""
+  write_config <<'EOF'
+{"shell":{"stderrCapture":"off"}}
+EOF
+  mode=$(PATH="$TD/bin:$PATH" WEZTERM_PANE=7 run_src_tty "$TD/fake-tty" 'print -r -- "$ZOM_STDERR_MODE"')
+  assert_eq "S37 capture off resolves empty" "$mode" ""
+  rm -f "$DD/stderr-tail.log"   # the tee cells above really do install tee; drop their side effect
+  rm -f "$XDG_CONFIG_HOME/zsh-opencode-mini/config.jsonc"
+  # scrollback failure: stderr comes from the pane text, fd 2 never touched
+  # (no tee install -> no stderr-tail.log), pane + tty stamped on the record
+  PATH="$TD/bin:$PATH" WEZTERM_PANE=7 run_zsh "__zom_preexec 'pane-fail'; false; __zom_precmd"
+  local f="$DD/last-failure.json" stderr_field
+  stderr_field=$(jq -r '.stderr' "$f")
+  assert_contains "S37 scrollback stderr from pane text" "$stderr_field" "PANE-LINE-ONE"
+  assert_eq    "S37 scrollback pane recorded"  "$(jq -r '.pane' "$f")" "7"
+  assert_eq    "S37 scrollback tty recorded"   "$(jq -r '.tty' "$f")"  ""
+  assert_file_missing "$DD/stderr-tail.log" "S37 scrollback installs no tee log"
+  # tee fallback failure (dead pane, real TTY): stderr comes from the tee log
+  printf 'TEE-MARKER line\n' > "$DD/stderr-tail.log"
+  PATH="$TD/bin:$PATH" WEZTERM_PANE=8 run_src_tty "$TD/fake-tty" "__zom_preexec 'tee-fail'; false; __zom_precmd"
+  stderr_field=$(jq -r '.stderr' "$f")
+  assert_contains "S37 tee fallback stderr from log" "$stderr_field" "TEE-MARKER"
+  assert_eq    "S37 tee fallback pane recorded" "$(jq -r '.pane' "$f")" "8"
+  assert_eq    "S37 tee fallback tty recorded"  "$(jq -r '.tty' "$f")"  "$TD/fake-tty"
+  cleanup
+}
+
+# S38: failure signals are terminal-scoped. Two concurrent shells (different
+# $TTY) share one data dir: a success in shell B must not flush shell A's
+# live failure, B must not prefill or zom-last over A's failure, and the
+# owner still can. Legacy records (no tty field) and tty-less shells keep
+# the old global-latest behaviour on both the read and the flush side.
+t_S38_failure_tty_scope() {
+  sandbox
+  mkdir -p "$DD"
+  : > "$TD/tty-a"; : > "$TD/tty-b"   # file TTYs: valid for tee, stable paths
+  local f="$DD/last-failure.json"
+  # TTY must be assigned in-body: zsh re-syncs the special $TTY parameter
+  # from the controlling terminal at startup, so an env-prefix TTY is dropped
+  run_as_tty() { run_zsh "TTY='$1'; $2" }
+  # A fails; B's success must not touch A's signal
+  run_as_tty "$TD/tty-a" "__zom_preexec 'fail-a'; false; __zom_precmd"
+  assert_eq "S38 signal carries owner tty" "$(jq -r '.tty' "$f")" "$TD/tty-a"
+  run_as_tty "$TD/tty-b" "__zom_preexec 'ok-b'; true; __zom_precmd"
+  assert_file_exists "$f" "S38 other pane's success keeps signal"
+  assert_contains "S38 signal intact" "$(cat "$f")" '"cmd":"fail-a"'
+  # B cannot see it: no prefill, zom-last refuses; A proceeds
+  run_as_tty "$TD/tty-b" 'zom x' >/dev/null 2>&1
+  local log
+  log=$(cat "$ZOM_MOCK_LOG")
+  assert_not_contains "S38 foreign prefill suppressed" "$log" "--prefill"
+  local out
+  out=$(run_as_tty "$TD/tty-b" 'zom-last' 2>&1 || true)
+  assert_contains "S38 foreign zom-last refuses" "$out" "another terminal"
+  assert_not_contains "S38 foreign zom-last sends nothing" "$(cat "$ZOM_MOCK_LOG")" "Explain and fix"
+  run_as_tty "$TD/tty-a" 'zom-last' >/dev/null 2>&1 || true
+  assert_contains "S38 owner zom-last proceeds" "$(cat "$ZOM_MOCK_LOG")" "Explain and fix"
+  # B fails; A's success must not flush B's signal
+  run_as_tty "$TD/tty-b" "__zom_preexec 'fail-b'; false; __zom_precmd"
+  run_as_tty "$TD/tty-a" "__zom_preexec 'ok-a'; true; __zom_precmd"
+  assert_file_exists "$f" "S38 B's signal survives A's success"
+  assert_contains "S38 B owns the signal now" "$(cat "$f")" '"tty":"'"$TD/tty-b"'"'
+  # a tty-less shell (reader "") owns every record: success flushes — the
+  # documented degradation for shells without a terminal
+  run_zsh "__zom_preexec 'ok-plain'; true; __zom_precmd"
+  assert_file_missing "$f" "S38 tty-less success flushes signal"
+  # legacy record without a tty field: owned by everyone, flushed by any
+  # success even from a shell with a TTY
+  local epoch
+  epoch=$(run_zsh 'print -r -- $EPOCHSECONDS')
+  printf '{"ts":"x","epoch":%s,"cwd":"%s","exit":1,"cmd":"legacy","stderr":""}' "$epoch" "$PWD" > "$f"
+  run_as_tty "$TD/tty-a" "__zom_preexec 'ok-legacy-flush'; true; __zom_precmd"
+  assert_file_missing "$f" "S38 legacy record flushed by any success"
+  cleanup
+}
+
+# S39: hook registration + file-mode phantom preexec. zsh 5.9 dispatches
+# preexec before EVERY line of a file-mode script (`zsh script.zsh`) whenever
+# preexec_functions is non-empty — registration method and .zshenv contents
+# are irrelevant; the phantom carries an empty command argument. The plugin
+# ignores empty-$1 preexecs (a real interactive preexec always carries the
+# command line), so the recorded cmd survives; hook arrays stay at one entry
+# per function under double sourcing.
+t_S39_hook_registration() {
+  sandbox
+  mkdir -p "$DD"
+  : > "$HOME/.zshenv"   # deliberate rc file: proves registration is marker-independent
+  cat > "$TD/s39-repro.zsh" <<REPRO
+source '$PLUGIN'
+source '$PLUGIN'
+__zom_preexec 'phantom-probe-cmd'
+false
+__zom_precmd
+print NPRE=\${(M)#preexec_functions:#__zom_preexec}
+print NPCMD=\${(M)#precmd_functions:#__zom_precmd}
+REPRO
+  local out
+  out=$(PATH="$MOCKBIN:$PATH" HOME="$HOME" zsh "$TD/s39-repro.zsh" 2>&1 || true)
+  assert_contains "S39 preexec registered exactly once (double source)" "$out" "NPRE=1"
+  assert_contains "S39 precmd registered exactly once (double source)" "$out" "NPCMD=1"
+  local hist
+  hist=$(cat "$DD"/history-*.jsonl)
+  assert_contains "S39 recorded cmd survives (no phantom preexec)" "$hist" '"cmd":"phantom-probe-cmd"'
+  assert_contains "S39 failure signal carries the cmd" "$(cat "$DD/last-failure.json")" '"cmd":"phantom-probe-cmd"'
+  cleanup
+}
+
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
@@ -892,7 +1133,9 @@ for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload
          t_S22_argv_probe t_S23_sequence_conflict t_S24_regression_fixes \
          t_S25_history_retention t_S26_unclaimed_hint t_S27_hook_context \
          t_S28_external_hook t_S29_size_sentinel t_S30_notices t_S31_spawn_measurement \
-         t_S32_prefill_consumed_once t_S33_hook_stdin_tty t_S34_osc_switch; do
+         t_S32_prefill_consumed_once t_S33_hook_stdin_tty t_S34_osc_switch \
+         t_S35_stderr_tail t_S36_drain_bg_skip t_S37_stderr_dual_mode \
+         t_S38_failure_tty_scope t_S39_hook_registration; do
   print -r -- "[$t]"
   $t
 done

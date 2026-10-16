@@ -14,9 +14,9 @@ the wezterm fork can adopt it as-is.
 
 ## Principle
 
-**Zero intrusion into zsh.** Registers only via `add-zsh-hook` (the same
-convention as direnv / python-autoenv), never overwrites widgets, never
-touches the prompt. Uninstall = delete the source line.
+**Zero intrusion into zsh.** Registers via idempotent appends to the
+`preexec_functions` / `precmd_functions` arrays, never overwrites widgets,
+never touches the prompt. Uninstall = delete the source line.
 
 ## Architecture: two hook surfaces, one config file
 

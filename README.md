@@ -94,6 +94,7 @@ Optional. Copy [`config.example.jsonc`](config.example.jsonc) to
 | `shell.passthroughKeys` | `""` | comma-separated strokes (e.g. `"ctrl+r"`) that exit mini and replay into the shell |
 | `shell.historyRetainMonths` | `6` | monthly history files older than this are deleted at shell start; `"off"` keeps everything |
 | `shell.osc` | `"on"` | per-command OSC 7777 report frame (a private protocol for terminal-side receivers); `"off"` also saves one base64 fork per command |
+| `shell.stderrCapture` | `"on"` | bounded tail of a failed command's stderr (~20 lines, 4 KB cap) lands in the failure signal so recipes and `zom_context` can see the cause. Channel picked once per shell: inside WezTerm (pane probe succeeds) the pane's own text tail is fetched on failure and stderr is never redirected; otherwise one resident `tee` mirrors the shell's stderr to the terminal byte-for-byte plus a ~256 KB tail log in the data dir. `"off"` removes both channels and the stderr field |
 | `shell.failurePrefill` | built-in | template pre-filled after a failure (`{cmd}` `{exit}` `{cwd}`; `"off"` disables) |
 | `shell.model` | `""` | pin a model for mini sessions (`provider/model#variant`); empty follows your global default |
 | `companion.failureTtlSeconds` | `600` | how long a failure stays "fresh" for the AI |
@@ -109,10 +110,19 @@ under `~/.config/opencode/`); the plugin never writes configuration.
 
 - zsh `preexec`/`precmd` hooks append command metadata to a local JSONL
   store; non-zero exits also refresh a failure signal. Metadata only, no
-  output capture.
+  output capture — with the default `shell.stderrCapture: "on"` the sole
+  exception is a bounded stderr tail that travels with the failure signal
+  (inside WezTerm it is read back from the pane's own scrollback, elsewhere
+  a ~256 KB tee log), so the AI can read the cause without the shell ever
+  swallowing a byte of your terminal output.
 - the opencode plugin exposes that store as the `zom_context` tool and a
   freshness-gated context hook; results and notices return through a single
   `outbox.jsonl` that the shell drains before each prompt.
+- background sessions finished while no session was open are injected into
+  the next live session's context (cwd, ok/error); the shell drain skips
+  outbox records already injected that way. A finish lands once per channel;
+  in the rare race (injection happens after a drain) it shows twice, the
+  same at-least-once duplication the outbox already tolerates.
 - shell-side degraded states (a failing spawn hook, an oversized history
   file) append to `notices.jsonl`; the companion drains it into the context
   injection on the next session, so states the user cannot see in daily use

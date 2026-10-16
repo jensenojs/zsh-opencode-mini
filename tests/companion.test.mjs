@@ -12,6 +12,11 @@
 //     failure watch -> generate call shape (model object, placeholder fill),
 //     exitFilter, ratePerHour via storage, both deliver paths, cleanup,
 //     manual recipe tools, bg-done notifications
+//   - bg-done in-session injection: queued at outbox-append time, delivered
+//     once by the next context hook (sid + cwd), bg-injected.json handshake
+//     written at injection time
+//   - failure {stderr} slot: the bounded tail stored by the zsh side fills
+//     the prompt; an absent field renders ""
 // What is NOT covered here: real opencode runtime behavior (tool schema
 // acceptance, hook event shape at runtime) — that is the platform's contract,
 // anchored by assertContract's version check.
@@ -490,6 +495,79 @@ try {
     clean()
   }
 
+  // 20. bg-done in-session injection: the event lands in the injection queue
+  //     at outbox-append time; the next context hook delivers it once (sid +
+  //     cwd + ok flag) and writes the bg-injected.json handshake the zsh
+  //     drain consults; a second hook sees nothing (queue consumed)
+  {
+    const sb = rootSandbox(); sb.use()
+    const { ctx, state } = makeCtx()
+    const clean = plugin.setup(ctx)
+    writeFileSync(join(sb.dataDir, "bg.jsonl"), JSON.stringify({ sid: "ses_zom-bg-inj", cwd: "/proj" }) + "\n")
+    state.outboxFeeds[0].push({ type: "session.execution.succeeded", data: { sessionID: "ses_zom-bg-inj" } })
+    const rec = await waitFor(() => readOutbox(sb.dataDir).length === 1) && readOutbox(sb.dataDir)[0]
+    rec?.kind === "bg-done"
+      ? ok("injection: outbox record still written")
+      : bad("injection: outbox record still written", JSON.stringify(rec))
+    const ev = contextEvent()
+    state.contextHooks[0](ev)
+    const line = ev.system.find((s) => s.text.includes("background session"))
+    line && line.text.includes("ses_zom-bg-inj") && line.text.includes("/proj")
+      ? ok("injection: hook delivers sid+cwd once")
+      : bad("injection: hook delivers sid+cwd once", JSON.stringify(ev.system))
+    // handshake: the drain on the zsh side skips this sid for the TTL window
+    const marker = JSON.parse(readFileSync(join(sb.dataDir, "bg-injected.json"), "utf8"))
+    typeof marker["ses_zom-bg-inj"] === "number"
+      ? ok("injection: bg-injected.json marker written")
+      : bad("injection: bg-injected.json marker written", JSON.stringify(marker))
+    const ev2 = contextEvent()
+    state.contextHooks[0](ev2)
+    !ev2.system.some((s) => s.text.includes("background session"))
+      ? ok("injection: consumed after one hook")
+      : bad("injection: consumed after one hook", JSON.stringify(ev2.system))
+    // failed path names the error in the injection (fresh sid — the notify
+    // set dedupes per sid, ses_zom-bg-inj is already consumed)
+    writeFileSync(join(sb.dataDir, "bg.jsonl"),
+      JSON.stringify({ sid: "ses_zom-bg-inj", cwd: "/proj" }) + "\n" +
+      JSON.stringify({ sid: "ses_zom-bg-fail", cwd: "/proj" }) + "\n")
+    state.outboxFeeds[0].push({ type: "session.execution.failed", data: { sessionID: "ses_zom-bg-fail" } })
+    await waitFor(() => readOutbox(sb.dataDir).length === 2)
+    const ev3 = contextEvent()
+    state.contextHooks[0](ev3)
+    const failLine = ev3.system.find((s) => s.text.includes("ses_zom-bg-fail"))
+    failLine && failLine.text.includes("with error")
+      ? ok("injection: failed session flagged with error")
+      : bad("injection: failed session flagged with error", JSON.stringify(ev3.system))
+    clean()
+  }
+
+  // 21. failure recipe {stderr} slot: the bounded tail the zsh side stored
+  //     into last-failure.json fills the prompt; an absent field renders ""
+  {
+    const sb = rootSandbox(); sb.use()
+    sb.write(`{"recipes":{"hint":{"on":"failure","model":"p/m","prompt":"err=[{stderr}]","deliver":"outbox"}}}`)
+    const { ctx, state } = makeCtx()
+    const clean = plugin.setup(ctx)
+    const fired = await fireViaWatcher(sb.dataDir,
+      { ts: "x", epoch: now, cwd: "/w", exit: 1, cmd: "x", stderr: "boom\nline2" },
+      () => state.generateCalls.length, 1)
+    fired !== null && state.generateCalls[0]?.prompt === "err=[boom\nline2]"
+      ? ok("failure {stderr} slot fills the prompt")
+      : bad("failure {stderr} slot fills the prompt", JSON.stringify(state.generateCalls[0]))
+    clean()
+    const sb2 = rootSandbox(); sb2.use()
+    sb2.write(`{"recipes":{"hint":{"on":"failure","model":"p/m","prompt":"err=[{stderr}]","deliver":"outbox"}}}`)
+    const { ctx: ctx2, state: state2 } = makeCtx()
+    const clean2 = plugin.setup(ctx2)
+    const fired2 = await fireViaWatcher(sb2.dataDir,
+      { ts: "x", epoch: now, cwd: "/w", exit: 1, cmd: "x" },
+      () => state2.generateCalls.length, 1)
+    fired2 !== null && state2.generateCalls[0]?.prompt === "err=[]"
+      ? ok("failure {stderr} absent renders empty")
+      : bad("failure {stderr} absent renders empty", JSON.stringify(state2.generateCalls[0]))
+    clean2()
+  }
+
   // 19. repeat-failure: the threshold-th identical failure today drops one
   //     outbox hint; further failures stay silent (count === threshold fires
   //     once per command per day)
@@ -600,6 +678,109 @@ try {
           JSON.stringify({ parseOk, endsNl: raw.endsWith("\n"), torn: raw.includes("torn"),
             firstId: ids[0], lastId: ids[ids.length - 1], padBytes, last }))
     clean()
+  }
+
+  // 18. tty scope: a failure recorded by another terminal is invisible to
+  //     this summon (tool answer and context injection); the owner sees it;
+  //     legacy records without a tty field and summons without a spawns.jsonl
+  //     record degrade to the old global-latest behaviour.
+  {
+    shared.use() // the recipe scenarios above re-pointed XDG at their own sandboxes
+    const spawnsPath = join(shared.dataDir, "spawns.jsonl")
+    const writeSpawns = (tty, cwd) =>
+      writeFileSync(spawnsPath, `${JSON.stringify({ ts: now, kind: "mini", tty, cwd })}\n`)
+    const removeSpawns = () => { try { renameSync(spawnsPath, spawnsPath + ".bak") } catch {} }
+    const restoreSpawns = () => { try { renameSync(spawnsPath + ".bak", spawnsPath) } catch {} }
+    const sigWithTty = (tty) => atomicSignal(shared.dataDir, {
+      ts: "x", epoch: now, cwd: "/tmp", exit: 1, cmd: "cargo build --release", tty,
+    })
+    const toolOf = () => {
+      const { ctx, state } = makeCtx()
+      plugin.setup(ctx)
+      return state.tools.find((t) => t.name === "zom_context")
+    }
+    const hookInjects = () => {
+      const { ctx, state } = makeCtx()
+      plugin.setup(ctx)
+      const ev = contextEvent()
+      state.contextHooks[0](ev)
+      return ev.system.filter((s) => String(s.text).includes("failed")).length
+    }
+
+    // no summon record: cannot tell which shell is asking -> global-latest
+    removeSpawns()
+    sigWithTty("/dev/ttysA")
+    const out0 = await toolOf().execute({ query: "last_failure" })
+    out0.content.includes("cargo build") && hookInjects() === 1
+      ? ok("no spawn record degrades to global-latest")
+      : bad("no spawn record degrades to global-latest", JSON.stringify({ out: out0.content, injects: hookInjects() }))
+
+    // another terminal's failure: hidden from tool and injection
+    writeSpawns("/dev/ttysB", "/w")
+    const out1 = await toolOf().execute({ query: "last_failure" })
+    out1.content.includes("no failed command in this terminal") && hookInjects() === 0
+      ? ok("foreign-tty failure hidden")
+      : bad("foreign-tty failure hidden", JSON.stringify({ out: out1.content, injects: hookInjects() }))
+
+    // the owner still sees it
+    writeSpawns("/dev/ttysA", "/w")
+    const out2 = await toolOf().execute({ query: "last_failure" })
+    out2.content.includes("cargo build") && hookInjects() === 1
+      ? ok("own-tty failure visible")
+      : bad("own-tty failure visible", JSON.stringify({ out: out2.content, injects: hookInjects() }))
+
+    // legacy record without tty field: owned by everyone
+    atomicSignal(shared.dataDir, { ts: "x", epoch: now, cwd: "/tmp", exit: 1, cmd: "cargo build --release" })
+    writeSpawns("/dev/ttysB", "/w")
+    const out3 = await toolOf().execute({ query: "last_failure" })
+    out3.content.includes("cargo build") && hookInjects() === 1
+      ? ok("legacy no-tty record stays global-latest")
+      : bad("legacy no-tty record stays global-latest", JSON.stringify({ out: out3.content, injects: hookInjects() }))
+    removeSpawns()
+  }
+
+  // 19. recent re-rank at read time: the summoning cwd's commands surface
+  //     first (exact match, then subdirectories, newest first within each
+  //     group); without a summon record the order is unchanged. Storage and
+  //     the N-most-recent pool are untouched.
+  {
+    shared.use() // the recipe scenarios above re-pointed XDG at their own sandboxes
+    const d = new Date()
+    const month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+    const hist = join(shared.dataDir, `history-${month}.jsonl`)
+    const line = (cmd, cwd) => JSON.stringify({ ts: "x", cwd, exit: 0, ms: 1, cmd })
+    // file order = oldest first: /other, /proj/sub, /proj, /other, /proj
+    writeFileSync(hist, [
+      line("a-oldest-other", "/other"),
+      line("b-projsub", "/proj/sub"),
+      line("c-proj-old", "/proj"),
+      line("d-other-new", "/other"),
+      line("e-proj-new", "/proj"),
+    ].join("\n") + "\n")
+    const spawnsPath = join(shared.dataDir, "spawns.jsonl")
+    const toolOf = () => {
+      const { ctx, state } = makeCtx()
+      plugin.setup(ctx)
+      return state.tools.find((t) => t.name === "zom_context")
+    }
+    const cmdsOf = async (query) => {
+      const out = await toolOf().execute(query)
+      return out.content.split("\n").map((l) => { try { return JSON.parse(l).cmd } catch { return l } })
+    }
+
+    writeFileSync(spawnsPath, `${JSON.stringify({ ts: now, kind: "mini", tty: "/dev/ttys9", cwd: "/proj" })}\n`)
+    const ranked = await cmdsOf({ query: "recent", n: 5 })
+    JSON.stringify(ranked) === JSON.stringify(["e-proj-new", "c-proj-old", "b-projsub", "d-other-new", "a-oldest-other"])
+      ? ok("recent ranked by summon cwd affinity")
+      : bad("recent ranked by summon cwd affinity", JSON.stringify(ranked))
+
+    // no summon record: exactly the old recency order (file order)
+    renameSync(spawnsPath, spawnsPath + ".bak")
+    const plain = await cmdsOf({ query: "recent", n: 5 })
+    JSON.stringify(plain) === JSON.stringify(["a-oldest-other", "b-projsub", "c-proj-old", "d-other-new", "e-proj-new"])
+      ? ok("recent without summon record keeps recency order")
+      : bad("recent without summon record keeps recency order", JSON.stringify(plain))
+    renameSync(spawnsPath + ".bak", spawnsPath)
   }
 } catch (e) {
   bad("suite crashed", e.stack || e.message)

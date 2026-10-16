@@ -2,9 +2,9 @@
 # The shell side of zsh-opencode-mini: command recording, the outbox consumer
 # (cross-side return channel from the opencode plugin), background-session
 # spawning, and the opencode mini launcher.
-# Principle: zero intrusion into the user's zsh — registers only via add-zsh-hook
-# (same convention as direnv/python-autoenv), never overwrites widgets, never
-# touches the prompt. Uninstall = remove the source line.
+# Principle: zero intrusion into the user's zsh — registers via idempotent
+# appends to the preexec_functions/precmd_functions arrays, never overwrites
+# widgets, never touches the prompt. Uninstall = remove the source line.
 #
 # Configuration is deliberately minimal: only what is genuinely shell-side
 # (data path, summon keybind). Strategy knobs live on the opencode side, in
@@ -41,6 +41,7 @@ __zom_cfg_load() {
     ZOM_CFG[passthroughKeys]=""
     ZOM_CFG[historyRetainMonths]=""
     ZOM_CFG[osc]=""
+    ZOM_CFG[stderrCapture]=""
     ZOM_CFG[failurePrefill]=""
     ZOM_CFG[model]=""
     ZOM_CFG[failureTtlSeconds]=""
@@ -61,6 +62,7 @@ __zom_cfg_load() {
     "ZOM_CFG[passthroughKeys]="   + (($s.passthroughKeys // "") | @sh),
     "ZOM_CFG[historyRetainMonths]=" + (($s.historyRetainMonths // "") | @sh),
     "ZOM_CFG[osc]="               + (($s.osc            // "") | @sh),
+    "ZOM_CFG[stderrCapture]="     + (($s.stderrCapture  // "") | @sh),
     "ZOM_CFG[failurePrefill]="    + (($s.failurePrefill // "") | @sh),
     "ZOM_CFG[model]="             + (($s.model          // "") | @sh),
     "ZOM_CFG[failureTtlSeconds]=" + ((.companion.failureTtlSeconds // "") | @sh),
@@ -95,6 +97,7 @@ typeset -gA ZOM_DEFAULTS=(
   [passthroughKeys]=""
   [historyRetainMonths]="6"
   [osc]="on"
+  [stderrCapture]="on"
   [failurePrefill]=$'上一条命令失败了（exit {exit}）：{cmd}\n帮我分析失败原因并给出修复建议'
   [model]=""
   [failureTtlSeconds]="600"
@@ -221,6 +224,19 @@ case "$ZOM_OSC" in
 esac
 (( $+ZOM_OSC_CODE )) || typeset -gr ZOM_OSC_CODE="7777"         # private OSC code; may change when the fork lands
 
+# shell.stderrCapture "on" (default) | "off" — "on" installs one resident tee
+# process at source time (the stderr-tail block below) that mirrors the
+# shell's stderr into <dataDir>/stderr-tail.log while still writing every
+# byte to the terminal; "off" leaves the shell's stderr untouched.
+ZOM_STDERR_CAPTURE=${ZOM_CFG[stderrCapture]}
+case "$ZOM_STDERR_CAPTURE" in
+  on | "" | null) ZOM_STDERR_CAPTURE="${ZOM_DEFAULTS[stderrCapture]}" ;;   # absent -> default
+  off)            : ;;
+  *)
+    print -u2 -- "zsh-opencode-mini: shell.stderrCapture '$ZOM_STDERR_CAPTURE' invalid (on|off) — using ${ZOM_DEFAULTS[stderrCapture]}."
+    ZOM_STDERR_CAPTURE="${ZOM_DEFAULTS[stderrCapture]}" ;;
+esac
+
 # Failure→prefill TTL (seconds). Shared with the opencode-side companion
 # plugin, which guards the same last-failure.json signal with the same key.
 ZOM_FAILURE_TTL=${ZOM_CFG[failureTtlSeconds]}
@@ -283,12 +299,95 @@ zmodload zsh/stat zsh/system 2>/dev/null
 (( $+builtins[zstat] && $+builtins[sysread] )) || \
   print -u2 -- "zsh-opencode-mini: zsh/stat + zsh/system unavailable — outbox notifications disabled"
 
-autoload -Uz add-zsh-hook
-
 if [[ ! -d "$ZOM_DATA_DIR" ]]; then
   mkdir -p "$ZOM_DATA_DIR" 2>/dev/null || \
     print -u2 -- "zsh-opencode-mini: cannot create data dir $ZOM_DATA_DIR — recording disabled"
 fi
+
+# ---- stderr capture (dual mode, resolved once at source) --------------------
+# last-failure.json records THAT a command failed; the model asking "why did
+# it fail" also needs the stderr of the failure. Two channels, picked ONCE
+# per shell — never switched after a failed capture:
+#   scrollback — $WEZTERM_PANE names a pane this wezterm instance actually
+#                serves: stderr is never touched; on failure the pane's own
+#                text tail is fetched via `wezterm cli get-text`.
+#   tee        — otherwise, when a TTY exists: one resident tee per shell
+#                mirrors stderr to the terminal (byte for byte, display
+#                semantics untouched) and into a bounded append-only log.
+# The probe is a real `get-text` — the exact call the failure path will make
+# — because `wezterm cli list` has no --pane-id filter to ask with and exit
+# status is the only format-independent reachability answer. A stale or
+# inherited WEZTERM_PANE (pane closed, ssh env) fails the probe and lands in
+# tee mode: the same guard the spawn hooks needed against "WEZTERM_PANE was
+# inherited". wezterm absent from PATH, capture off, or a tty-less shell
+# (scripts, test sandboxes): no channel, and nothing is installed.
+# What this is NOT: a general transcript — stdout is never captured (the
+# scrollback tail mixes it in only because the terminal holds both), and the
+# tee log holds at most one rotation window of output.
+ZOM_STDERR_LOG="$ZOM_DATA_DIR/stderr-tail.log"
+# knockout: fixed 256 KB window; make it configurable if a real workload
+# legitimately needs more than the last few screens of stderr
+(( $+ZOM_STDERR_MAX_BYTES )) || typeset -gr ZOM_STDERR_MAX_BYTES=262144
+ZOM_STDERR_MODE=""
+if [[ "$ZOM_STDERR_CAPTURE" == on ]]; then
+  if [[ -n "${WEZTERM_PANE:-}" ]] && (( $+commands[wezterm] )) \
+    && wezterm cli get-text --pane-id "$WEZTERM_PANE" >/dev/null 2>&1; then
+    ZOM_STDERR_MODE=scrollback
+  elif [[ -n "${TTY:-}" && -d "$ZOM_DATA_DIR" ]] && (( $+commands[tee] )); then
+    # tee's log write is O_APPEND (tee -a), which is what makes rotation below
+    # a plain truncate: once the file is emptied, the next append lands at the
+    # new (zero) end of file. No mv, no fd swap, no second tee, no lingering
+    # writer on a stale inode — the cost is that writes racing the truncate
+    # can be lost, which only ever blurs a tail that exists to be recent.
+    # The `> "$TTY"` write-back exists only inside this branch — scrollback
+    # mode never redirects fd 2 at all.
+    if exec 2> >(tee -a "$ZOM_STDERR_LOG" > "$TTY" 2>/dev/null); then
+      ZOM_STDERR_MODE=tee
+    else
+      print -u2 -- "zsh-opencode-mini: stderr tail capture failed to install — continuing without it"
+      ZOM_STDERR_MODE=""
+    fi
+  fi
+fi
+
+# Bounded log, checked once per command with one builtin stat (zero forks —
+# the same per-command budget as the [[ -d ]] guard in __zom_precmd). Only
+# the tee writer trims: scrollback mode holds no log, and a channel-less
+# shell must not truncate a sibling shell's live log. Runs AFTER the failure
+# branch has read the tail, so a rotation can never erase the stderr of the
+# very failure being recorded.
+__zom_stderr_rotate() {
+  [[ "$ZOM_STDERR_MODE" == tee ]] || return 0
+  (( $+builtins[zstat] )) || return 0
+  local -a st
+  if ! zstat -A st +size "$ZOM_STDERR_LOG" 2>/dev/null; then
+    return 0   # no log yet (capture off, or nothing written this session)
+  fi
+  if (( st[1] > ZOM_STDERR_MAX_BYTES )); then
+    : > "$ZOM_STDERR_LOG" 2>/dev/null
+  fi
+  return 0
+}
+
+# Single owner of the stderr shape contract: last ~20 lines, capped at 4 KB
+# total, control characters except TAB/LF/CR stripped (a raw ESC from coloured
+# output would make the JSON unreadable to JSON.parse-based consumers). Both
+# channels feed this — the companion's stderr slot must not be able to tell
+# which channel produced a record.
+__zom_stderr_shape() {
+  tail -n 20 | tail -c 4096 | LC_ALL=C tr -d '\000-\010\013\014\016-\037'
+}
+
+# tty ownership of a failure signal: another terminal's failure must not
+# surface in this one. "" on either side means "cannot tell" — legacy records
+# written before the tty field existed, or shells without a terminal (scripts,
+# test sandboxes) — and degrades to the previous global-latest behaviour
+# instead of hiding a real failure from everyone. One predicate for all three
+# consumers (prefill gate, zom-last gate, the success flush in __zom_precmd),
+# so reading and clearing can never disagree about who owns a signal.
+__zom_tty_owned() {
+  [[ -z "$1" || -z "${TTY:-}" || "$1" == "$TTY" ]]
+}
 
 # Rolling history cleanup, once per shell. YYYY-MM strings compare
 # lexicographically, so a file is dropped when its month sorts before the
@@ -327,28 +426,44 @@ __zom_json_escape() {
 
 # ---- hooks: command recording ----
 
-# preexec: command starts. Store start time and command text
-# (precmd does not receive the command line).
-# __ZOM_T0/__ZOM_CMD cross the hook boundary (preexec -> precmd), so they
-# must live at global scope for the duration of one command; precmd copies
-# both into locals and unsets them before the next prompt can observe them.
+# preexec: command starts. Store start time, command text, and the terminal
+# identity (pane id) the command ran in (precmd does not receive the command
+# line, and $WEZTERM_PANE is env-static but recorded per command so history
+# lines and failure signals carry their terminal of origin).
+# __ZOM_T0/__ZOM_CMD/__ZOM_PANE cross the hook boundary (preexec -> precmd),
+# so they must live at global scope for the duration of one command; precmd
+# copies all three into locals and unsets them before the next prompt can
+# observe them.
 __zom_preexec() {
+  # File-mode scripts (`zsh script.zsh`) dispatch preexec before EVERY line
+  # with an empty command argument (zsh 5.9, whenever preexec_functions is
+  # non-empty — unrelated to how the hook was registered). A real interactive
+  # preexec always carries the command line, so per-line phantoms are
+  # recognisable by their empty $1; honouring them would clobber __ZOM_CMD
+  # between the real preexec and precmd.
+  [[ -n "$1" ]] || return 0
   typeset -g __ZOM_T0=$EPOCHREALTIME
   typeset -g __ZOM_CMD=$1
+  typeset -g __ZOM_PANE=${WEZTERM_PANE:-}
 }
 
 # precmd: command finished. Append one JSON line to the monthly history file,
-# refresh the failure signal file on non-zero exit, and emit one OSC frame
-# (no receiver exists yet; the format is reserved for wezterm fork hole 1).
-# Capture scope: command text + exit code + elapsed ms + cwd.
-# Command OUTPUT (stdout/stderr) is NOT captured — metadata only.
+# refresh the failure signal file on non-zero exit (with the stderr tail of
+# the failure, in the capture mode resolved at source), and emit one OSC
+# frame (no receiver exists yet; the format is reserved for wezterm fork hole
+# 1). Capture scope: command text + exit code + elapsed ms + cwd + the
+# terminal identity (tty, pane id) the command ran in.
+# Command stdout is NOT captured; stderr only as a bounded tail on the
+# failure signal (the stderr-capture block above).
 __zom_precmd() {
   local exit_code=$?                  # first statement: capture $? before anything overwrites it
   [[ -n "${__ZOM_T0:-}" ]] || return 0
 
   local cmd=${__ZOM_CMD:-}
   local t0=${__ZOM_T0}
-  unset __ZOM_T0 __ZOM_CMD
+  local pane=${__ZOM_PANE:-}
+  local tty=${TTY:-}
+  unset __ZOM_T0 __ZOM_CMD __ZOM_PANE
   [[ -n "$cmd" ]] || return 0
 
   # If the data dir could not be created (warning already printed at source
@@ -367,10 +482,13 @@ __zom_precmd() {
   strftime -s ts '%Y-%m-%dT%H:%M:%S%z' $EPOCHSECONDS
 
   # 1) Append to the monthly history store (the only fork in this path is the
-  #    base64 below; strftime is a builtin)
+  #    base64 below; strftime is a builtin). tty/pane stamp the terminal of
+  #    origin: pane attribution for history, and the key that scopes the
+  #    failure signal to the terminal that owns it.
   local json
-  json=$(printf '{"ts":"%s","cwd":"%s","exit":%d,"ms":%s,"cmd":"%s"}' \
-    "$ts" "$(__zom_json_escape "$PWD")" "$exit_code" "$elapsed_ms" "$(__zom_json_escape "$cmd")")
+  json=$(printf '{"ts":"%s","cwd":"%s","exit":%d,"ms":%s,"tty":"%s","pane":"%s","cmd":"%s"}' \
+    "$ts" "$(__zom_json_escape "$PWD")" "$exit_code" "$elapsed_ms" \
+    "$(__zom_json_escape "$tty")" "$(__zom_json_escape "$pane")" "$(__zom_json_escape "$cmd")")
   print -r -- "$json" >> "$ZOM_DATA_DIR/history-$(strftime '%Y-%m' $EPOCHSECONDS).jsonl"
 
   # 2) Non-zero exit -> atomically refresh the failure signal file
@@ -379,15 +497,40 @@ __zom_precmd() {
   #    early (`git log | head`) or the user interrupting with Ctrl-C are
   #    normal interactions, not failures worth prefilling a repair prompt for.
   if (( exit_code != 0 && exit_code != 141 && exit_code != 130 )); then
-    printf '{"ts":"%s","epoch":%d,"cwd":"%s","exit":%d,"cmd":"%s"}\n' \
-      "$ts" "$EPOCHSECONDS" "$(__zom_json_escape "$PWD")" "$exit_code" "$(__zom_json_escape "$cmd")" \
+    local stderr_tail=""
+    if [[ "$ZOM_STDERR_MODE" == scrollback && -n "$pane" ]] && (( $+commands[wezterm] )); then
+      # scrollback mode: the pane's own text (screen content at precmd time —
+      # stdout mixed with stderr, bounded by the screen height). Fetched
+      # fresh, no log exists in this mode.
+      stderr_tail=$(wezterm cli get-text --pane-id "$pane" 2>/dev/null | __zom_stderr_shape) || stderr_tail=""
+    elif [[ "$ZOM_STDERR_CAPTURE" == on && "$ZOM_STDERR_MODE" == tee && -s "$ZOM_STDERR_LOG" ]]; then
+      # tee mode reads the log its resident tee wrote. A channel-less shell
+      # reads nothing: it has no interaction prompt to consume the tail, and
+      # mixing a sibling's log into this failure would misattribute the
+      # evidence (the redirect cannot fail — the -s guard above).
+      stderr_tail=$(__zom_stderr_shape < "$ZOM_STDERR_LOG") || stderr_tail=""
+    fi
+    printf '{"ts":"%s","epoch":%d,"cwd":"%s","exit":%d,"tty":"%s","pane":"%s","cmd":"%s","stderr":"%s"}\n' \
+      "$ts" "$EPOCHSECONDS" "$(__zom_json_escape "$PWD")" "$exit_code" \
+      "$(__zom_json_escape "$tty")" "$(__zom_json_escape "$pane")" \
+      "$(__zom_json_escape "$cmd")" "$(__zom_json_escape "$stderr_tail")" \
       > "$ZOM_DATA_DIR/last-failure.json.tmp" \
       && mv "$ZOM_DATA_DIR/last-failure.json.tmp" "$ZOM_DATA_DIR/last-failure.json"
   elif (( exit_code == 0 )) && [[ -f "$ZOM_DATA_DIR/last-failure.json" ]]; then
-    # "last command failed" must mean THE last command: any later successful
-    # command (in any pane — the store is intentionally global-latest) flushes
-    # the stale signal, so a new pane never inherits an old failure.
-    command rm -f "$ZOM_DATA_DIR/last-failure.json"
+    # "last command failed" must mean THE last command — within the terminal
+    # that owns the signal. A success in pane B must not erase pane A's live
+    # failure (two panes share the store), so the flush honours the same
+    # __zom_tty_owned predicate as the readers. Legacy records without a tty
+    # field (and tty-less shells) stay owned by everyone: any success
+    # flushes them, exactly the old behaviour.
+    local sig_line sig_tty=""
+    sig_line=$(<"$ZOM_DATA_DIR/last-failure.json")
+    if [[ "$sig_line" == *'"tty":"'* ]]; then
+      sig_tty=${${sig_line#*\"tty\":\"}%%\"*}
+    fi
+    if __zom_tty_owned "$sig_tty"; then
+      command rm -f "$ZOM_DATA_DIR/last-failure.json"
+    fi
   fi
 
   # 3) Deliver outbox records that arrived while the command ran (see
@@ -405,6 +548,11 @@ __zom_precmd() {
     b64=${$(printf '%s' "$json" | base64)//$'\n'/}
     printf '\e]%s;zom;v1;%s\a' "$ZOM_OSC_CODE" "$b64"
   fi
+
+  # 5) Rotate the stderr tail for the next command (bounded store; see the
+  #    stderr-tail block). Deliberately after step 2: the failure branch has
+  #    already read the tail this command produced.
+  __zom_stderr_rotate
 }
 
 # ---- outbox: the cross-side return channel ----
@@ -456,13 +604,24 @@ __zom_outbox_drain() {
   # Per-line parse: one malformed line must not cost the valid lines after it
   # (a chunk-level jq loses everything past the first bad line, and the cursor
   # would advance past them anyway).
-  local line text bad=0
+  local line text bad=0 bsid
   while IFS= read -r line; do
     if [[ -z "$line" ]]; then
       continue
     fi
     if text=$(printf '%s' "$line" | jq -r '.text // empty' 2>/dev/null); then
       if [[ -n "$text" ]]; then
+        # A bg-done record the companion already injected into a live session
+        # is consumed silently: the model already knows (contract on
+        # __zom_bg_injected_p below). The string pre-filter keeps the extra
+        # jq fork off every non-bg-done record; a record carrying a .sid IS a
+        # bg-done record (only appendOutbox's bg-done lines carry one).
+        if [[ "$line" == *'"bg-done"'* ]]; then
+          bsid=$(printf '%s' "$line" | jq -r '.sid // ""' 2>/dev/null) || bsid=""
+          if [[ -n "$bsid" ]] && __zom_bg_injected_p "$bsid"; then
+            continue
+          fi
+        fi
         print -u2 -- "zom: $text"
       fi
     else
@@ -475,6 +634,32 @@ __zom_outbox_drain() {
 
   print -r -- "$(( start + consumed ))" > "$ZOM_DATA_DIR/outbox.cursor"
   return 0
+}
+
+# Has the companion already delivered this bg-done session id into a live
+# session's context? The opencode-side companion appends {sid: epoch} to
+# bg-injected.json at injection time (tmp+mv, the last-failure.json
+# protocol); this side only reads it. "Recent" shares the failure TTL
+# (companion.failureTtlSeconds -> ZOM_FAILURE_TTL): past the window the
+# marker is ignored, so a stale marker can never silence a notice forever.
+# Known gap, accepted: the shell can drain a record BEFORE the injection
+# happens (no session was open when the event arrived, then the user never
+# summoned) — the user then sees the notice twice, once as a terminal line
+# and once as a context hint. That is the same at-least-once duplication the
+# outbox already tolerates; coordinating the two consumers exactly would
+# need a cross-process lock this design deliberately avoids.
+__zom_bg_injected_p() {
+  local f="$ZOM_DATA_DIR/bg-injected.json"
+  [[ -f "$f" ]] || return 1
+  local epoch
+  epoch=$(jq -r --arg sid "$1" '.[$sid] // 0' "$f" 2>/dev/null) || return 1
+  if ! __zom_is_uint "$epoch" || [[ "$epoch" == 0 ]]; then
+    return 1
+  fi
+  if (( EPOCHSECONDS - epoch <= ZOM_FAILURE_TTL )); then
+    return 0
+  fi
+  return 1
 }
 
 # ---- background sessions ----
@@ -503,14 +688,17 @@ __zom_outbox_drain() {
 typeset -gU ZOM_SPAWN_HOOKS
 __zom_run_spawn_hooks() {
   local -x ZOM_HOOK_KIND=${1:-} ZOM_HOOK_SID=${2:-} ZOM_HOOK_CWD=$PWD
-  # Usage measurement: one line per spawn, all builtins. Nothing consumes
-  # spawns.jsonl yet — it exists to answer "how often is this thing actually
-  # summoned", the number that decides where future awareness features belong
-  # (a channel read twice a day cannot carry urgent facts).
-  # knockout: unrotated append-only; at ~40 bytes/line even heavy use takes
+  # Usage measurement + summon identity: one line per spawn, all builtins.
+  # The tty+cwd stamp is what the companion (zom-companion.js) reads back as
+  # "which shell summoned this session" for tty-scoped failure signals and
+  # cwd-ranked recent history — the companion has no env channel into the
+  # shell, so the ledger is the direct path, last-summon-wins. Hook consumers
+  # needing the tty read $TTY directly (function hooks share the shell's
+  # scope; external ones get the real device via the stdin redirect below).
+  # knockout: unrotated append-only; at ~60 bytes/line even heavy use takes
   # years to matter — if it ever does, fold it into the monthly rotation.
   [[ -d "$ZOM_DATA_DIR" ]] && \
-    print -r -- "{\"ts\":$EPOCHSECONDS,\"kind\":\"${ZOM_HOOK_KIND}\"}" >> "$ZOM_DATA_DIR/spawns.jsonl"
+    print -r -- "{\"ts\":$EPOCHSECONDS,\"kind\":\"${ZOM_HOOK_KIND}\",\"tty\":\"$(__zom_json_escape "${TTY:-}")\",\"cwd\":\"$(__zom_json_escape "$PWD")\"}" >> "$ZOM_DATA_DIR/spawns.jsonl"
   local h
   for h in ${=ZOM_SPAWN_HOOKS:-}; do
     if (( $+functions[$h] || $+commands[$h] )) || [[ -x "$h" ]]; then
@@ -568,22 +756,28 @@ __zom_failure_prefill() {
   local f="$ZOM_DATA_DIR/last-failure.json"
   [[ -f "$f" ]] || return 1
   local info cwd
-  info=$(jq -r '[.epoch // 0, .exit // "?", .cmd // ""] | @tsv' "$f" 2>/dev/null) || return 1
+  info=$(jq -r '[.epoch // 0, .exit // "?", (.tty // ""), .cmd // ""] | @tsv' "$f" 2>/dev/null) || return 1
   cwd=$(jq -r '.cwd // ""' "$f" 2>/dev/null) || return 1
-  local epoch exit_code cmd rest
-  # Split on the first two real tabs only. jq's @tsv escapes tabs inside cmd
-  # to a literal backslash-t, so real tabs appear exactly as the two field
+  local epoch exit_code sig_tty cmd rest
+  # Split on the first three real tabs only. jq's @tsv escapes tabs inside cmd
+  # to a literal backslash-t, so real tabs appear exactly as the field
   # separators; splitting with ${(w)} here would collapse runs of spaces in
   # the original command into one.
   epoch=${info%%$'\t'*}
   rest=${info#*$'\t'}
   exit_code=${rest%%$'\t'*}
+  rest=${rest#*$'\t'}
+  sig_tty=${rest%%$'\t'*}
   cmd=${rest#*$'\t'}
   __zom_is_uint "$epoch" || return 1
   (( EPOCHSECONDS - epoch <= ZOM_FAILURE_TTL )) || return 1
   # Directory match: a failure observed in another working directory must not
   # surface here, even inside the TTL window (different project, different bug).
   [[ "$cwd" == "$PWD" ]] || return 1
+  # Terminal ownership: another pane's failure is invisible here (empty
+  # sig_tty = legacy record, owned by everyone). Checked before consume-once:
+  # a mismatched glance must not burn the signal for the pane that owns it.
+  __zom_tty_owned "$sig_tty" || return 1
   # Consume-once: the prefill is a suggestion — seen is consumed, whether or
   # not the user actually sent it. Record the failure's epoch when we prefill
   # and never prefill the same failure again; a NEW failure carries a new
@@ -764,7 +958,7 @@ zom() {
 # count as "the last failure" here either.
 zom-last() {
   local f="$ZOM_DATA_DIR/last-failure.json"
-  local last_failed epoch cwd
+  local last_failed epoch cwd sig_tty
   last_failed=$(jq -r '.cmd // empty' "$f" 2>/dev/null)
   if [[ -z "$last_failed" ]]; then
     print -u2 "zom-last: no failed command on record"
@@ -780,6 +974,13 @@ zom-last() {
     print -u2 "zom-last: last failure was in $cwd, not here"
     return 1
   fi
+  # Same ownership rule as the prefill: another terminal's failure is not
+  # explainable from this one — send the user to the terminal that saw it.
+  sig_tty=$(jq -r '.tty // ""' "$f" 2>/dev/null)
+  if ! __zom_tty_owned "$sig_tty"; then
+    print -u2 "zom-last: last failure was in another terminal"
+    return 1
+  fi
   print -- "zom-last: $last_failed"
   # `run` creates a fresh session whose id is only known to opencode itself.
   __zom_run_spawn_hooks last
@@ -787,8 +988,13 @@ zom-last() {
 }
 
 # ---- install ----
-add-zsh-hook preexec __zom_preexec
-add-zsh-hook precmd __zom_precmd
+# Direct idempotent array append: the (I) probe keeps double-sourcing
+# idempotent, and nothing here needs add-zsh-hook. Note the per-line phantom
+# preexec of file-mode scripts is a zsh 5.9 property of ANY non-empty
+# preexec_functions (registration method irrelevant) — __zom_preexec guards
+# against it via its empty-$1 check.
+(( ${preexec_functions[(I)__zom_preexec]} )) || preexec_functions+=(__zom_preexec)
+(( ${precmd_functions[(I)__zom_precmd]} )) || precmd_functions+=(__zom_precmd)
 
 if [[ -n "$ZOM_KEYBIND" ]]; then
   # Conflict-aware binding. Never steal a key the user already uses: warn and
@@ -869,24 +1075,24 @@ if [[ -n "$ZOM_KEYBIND" ]]; then
   __zom_ensure_bind() {
     local current
     if (( ZOM_BIND_DONE == 2 )); then
-      add-zsh-hook -d precmd __zom_ensure_bind
+      precmd_functions=(${precmd_functions:#__zom_ensure_bind})
       return 0
     fi
     current=$(bindkey "$ZOM_KEYBIND" 2>/dev/null)
     if [[ "$current" == *'__zom_mini_widget'* ]]; then
-      add-zsh-hook -d precmd __zom_ensure_bind
+      precmd_functions=(${precmd_functions:#__zom_ensure_bind})
       __zom_keybind_conflict
       return 0
     fi
     __zom_bind "$ZOM_KEYBIND"
     current=$(bindkey "$ZOM_KEYBIND" 2>/dev/null)
     if [[ "$current" == *'__zom_mini_widget'* ]]; then
-      add-zsh-hook -d precmd __zom_ensure_bind
+      precmd_functions=(${precmd_functions:#__zom_ensure_bind})
       __zom_keybind_conflict
     fi
     return 0
   }
-  add-zsh-hook precmd __zom_ensure_bind
+  (( ${precmd_functions[(I)__zom_ensure_bind]} )) || precmd_functions+=(__zom_ensure_bind)
 fi
 
 # ---- Configuration report (read-only) --------------------------------------
@@ -926,6 +1132,7 @@ zom-config() {
   __zom_cfg_line passthroughKeys "$ZOM_PASSTHROUGH_KEYS"
   __zom_cfg_line historyRetainMonths "${ZOM_HISTORY_RETAIN:-off}"
   __zom_cfg_line osc            "$ZOM_OSC"
+  __zom_cfg_line stderrCapture  "$ZOM_STDERR_CAPTURE"
   __zom_cfg_line failurePrefill "$ZOM_FAILURE_PREFILL_TMPL"
   __zom_cfg_line model          "${ZOM_CFG[model]}"
   print -r -- "companion (read by the opencode-side plugin, per session):"

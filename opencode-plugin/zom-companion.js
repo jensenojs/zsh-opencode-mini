@@ -22,7 +22,9 @@
 //     last-failure.json), delivered into next-session injection or the
 //     outbox — the zsh side reads outbox.jsonl via its byte cursor
 //   - zom-bg notifications: watch session.execution.* for background sessions
-//     recorded in bg.jsonl and append {kind:"bg-done"} lines to the outbox
+//     recorded in bg.jsonl; each finish is appended to the outbox AND queued
+//     for in-session injection at the next context hook. The zsh drain skips
+//     outbox records already injected (bg-injected.json is the handshake).
 //   - notices: drain shell-side degraded-state facts (notices.jsonl) into the
 //     context injection so the next session surfaces them to the user
 
@@ -55,9 +57,11 @@ const DEFAULTS = {
 // loop. The keys are the entire legal `on` vocabulary: a recipe whose `on`
 // has no entry here could never fire, and a template slot outside its
 // trigger's set would render as "" at fire time — compileRecipes refuses
-// both loudly instead of wiring either half-silent.
+// both loudly instead of wiring either half-silent. failure.stderr is the
+// bounded stderr tail the zsh side stores into last-failure.json (may be ""
+// when stderr capture is off or nothing was written).
 const TRIGGERS = {
-  failure: { slots: ["cmd", "exit", "cwd"] },
+  failure: { slots: ["cmd", "exit", "cwd", "stderr"] },
   manual: { slots: ["cmd", "exit", "cwd"] },
   "bg-done": { slots: ["sid", "cwd"] },
 }
@@ -219,6 +223,39 @@ function readLastFailure(dataDir) {
   }
 }
 
+// The summon identity: which shell (tty, cwd) spawned the session now asking.
+// The zsh side stamps every spawn into spawns.jsonl; the last mini/last line
+// is this session's summon — last-summon-wins, the same accepted imprecision
+// as the failure signal itself (two minis in two panes share one server and
+// one data dir). No file or no usable line (old mini builds wrote neither
+// tty nor cwd): undefined, and every consumer degrades to global-latest.
+function readLastSummon(dataDir) {
+  const p = join(dataDir, "spawns.jsonl")
+  if (!existsSync(p)) return undefined
+  let last
+  try {
+    for (const line of readFileSync(p, "utf8").split("\n")) {
+      if (!line.trim()) continue
+      try {
+        const r = JSON.parse(line)
+        if (r.kind === "mini" || r.kind === "last") last = r
+      } catch {} // torn line, same tolerance as every other jsonl read here
+    }
+  } catch {
+    return undefined
+  }
+  return last ? { tty: String(last.tty ?? ""), cwd: String(last.cwd ?? "") } : undefined
+}
+
+// tty ownership, companion side — mirror of the zsh-side __zom_tty_owned so
+// the two ends can never disagree about who owns a failure. "" on either side
+// means "cannot tell" (legacy records without the field, missing
+// spawns.jsonl, tty-less shells) and degrades to the old global-latest
+// behaviour instead of hiding a real failure from everyone.
+function ttyOwned(sigTty, summonTty) {
+  return !sigTty || !summonTty || sigTty === summonTty
+}
+
 // --- shell-side notices ----------------------------------------------------
 // The zsh side appends degraded-state facts (hook failures, oversized
 // history) to notices.jsonl — states the user cannot perceive in daily use.
@@ -355,6 +392,32 @@ export default {
     // so durable storage would be a second owner of a disposable fact.
     const outputs = new Map()
 
+    // Background-session finish notices waiting for the next context hook.
+    // Same lifetime argument as `outputs`: minute-scale hints consumed by the
+    // in-process hook. The context hook only ever runs for a live session,
+    // so the queue is consumed exactly when a session can hear it — that IS
+    // the "active session" gate, no session registry needed. A notice that
+    // arrives with no session open waits for the next one and is dropped
+    // once older than the failure TTL (the outbox copy still reached the
+    // shell prompt meanwhile).
+    const bgDoneQueue = []
+    // Cross-process handshake with the zsh side's __zom_outbox_drain: a
+    // bg-done injected here must not ALSO print as `zom: ...` at the shell
+    // prompt, so injection records {sid: epoch} in this file and the drain
+    // skips records whose sid was injected within the failure TTL (the same
+    // key both sides read for freshness). Written only when an injection
+    // actually happened; a drain that ran earlier still prints — the accepted
+    // duplication is documented on the zsh side.
+    const bgInjectedPath = join(dataDir, "bg-injected.json")
+    const markBgInjected = (sid) => {
+      let cur = {}
+      try { cur = JSON.parse(readFileSync(bgInjectedPath, "utf8")) } catch {}
+      cur[sid] = Math.floor(Date.now() / 1000)
+      const tmp = `${bgInjectedPath}.tmp`
+      writeFileSync(tmp, JSON.stringify(cur))
+      renameSync(tmp, bgInjectedPath)
+    }
+
     const fill = (template, slots) =>
       String(template ?? "").replace(/\{(\w+)\}/g, (m, key) => (slots[key] ?? ""))
 
@@ -398,7 +461,7 @@ export default {
       for (const [name, recipe] of Object.entries(recipes)) {
         if (recipe.on !== "failure") continue
         if (recipe.exitFilter && !recipe.exitFilter.includes(sig.exit)) continue
-        void fireRecipe(name, recipe, { cmd: sig.cmd, exit: sig.exit, cwd: sig.cwd }).catch(() => {})
+        void fireRecipe(name, recipe, { cmd: sig.cmd, exit: sig.exit, cwd: sig.cwd, stderr: sig.stderr ?? "" }).catch(() => {})
       }
     }
 
@@ -409,10 +472,14 @@ export default {
         description:
           "Read the user's zsh command history store (JSONL, recorded by the " +
           "zsh-opencode-mini plugin). query=last_failure returns the most recent " +
-          "failed command; query=recent returns the last N commands. Use when the " +
-          "user refers to 'the command I just ran' or a failure they just saw. " +
-          "last_failure returns the most recent failure regardless of age — check " +
-          "ts/ageSeconds/fresh before assuming it is what the user means.",
+          "failed command recorded by THIS terminal (failures from other " +
+          "terminal panes are not surfaced); query=recent returns the last N " +
+          "commands, re-ranked so commands from the summoning directory come " +
+          "first (exact cwd match, then its subdirectories, then the rest — " +
+          "newest first within each group). Use when the user refers to 'the " +
+          "command I just ran' or a failure they just saw. last_failure returns " +
+          "the most recent failure regardless of age — check ts/ageSeconds/fresh " +
+          "before assuming it is what the user means.",
         input: {
           type: "object",
           properties: {
@@ -426,6 +493,14 @@ export default {
           if (input.query === "last_failure") {
             const sig = readLastFailure(dataDir)
             if (!sig) return { content: "no failed command on record" }
+            // Terminal scope: another pane's failure is not this summon's
+            // business. No summon record at all (spawns.jsonl missing or
+            // pre-tty) degrades to global-latest — the only honest answer
+            // when the summoning terminal cannot be known.
+            const summon = readLastSummon(dataDir)
+            if (summon && !ttyOwned(sig.tty ?? "", summon.tty)) {
+              return { content: "no failed command in this terminal" }
+            }
             return {
               content: JSON.stringify({
                 ...sig,
@@ -436,7 +511,24 @@ export default {
           const n = Number(input.n) > 0 ? Math.floor(Number(input.n)) : cfg.recentDefaultN
           const p = monthFile()
           if (!existsSync(p)) return { content: "no history for the current month" }
-          const lines = readFileSync(p, "utf8").trim().split("\n").slice(-n)
+          // Pool stays "N most recent"; ranking is read-time only. The
+          // summoning directory's commands surface first (exact match, then
+          // its subdirectories — segment-aware so /proj does not claim
+          // /project), newest first within each group. No summon cwd on
+          // record → unchanged order.
+          let lines = readFileSync(p, "utf8").trim().split("\n").slice(-n)
+          const summon = readLastSummon(dataDir)
+          if (summon?.cwd) {
+            const root = summon.cwd.endsWith("/") ? summon.cwd : summon.cwd + "/"
+            const cwdOf = (line) => {
+              try { return String(JSON.parse(line).cwd ?? "") } catch { return "" }
+            }
+            const rank = (cwd) => (cwd === summon.cwd ? 0 : cwd.startsWith(root) ? 1 : 2)
+            lines = lines
+              .map((line, i) => ({ line, i, rank: rank(cwdOf(line)) }))
+              .sort((a, b) => a.rank - b.rank || b.i - a.i)
+              .map((e) => e.line)
+          }
           return { content: lines.join("\n") }
         },
       })
@@ -470,7 +562,11 @@ export default {
     ctx.session.hook("context", (event) => {
       const now = Math.floor(Date.now() / 1000)
       const sig = readFailureSignal(dataDir, cfg.failureTtlSeconds)
-      if (sig) {
+      // Same terminal scope as the tool: another pane's failure must not enter
+      // this summon's context. Without a summon record the injection keeps the
+      // old global-latest behaviour (degradation, not a new gate to fail).
+      const summon = readLastSummon(dataDir)
+      if (sig && (!summon || ttyOwned(sig.tty ?? "", summon.tty))) {
         event.system.push({
           type: "text",
           text:
@@ -488,6 +584,27 @@ export default {
             `user cannot see in daily use; surface them proactively at a natural ` +
             `point in the conversation:\n` +
             notices.map((n) => `- [${n.kind}] ${n.text}`).join("\n"),
+        })
+      }
+      // Background-session finishes (see the bgDoneQueue contract above).
+      // One system entry per hook at most; stale entries are dropped without
+      // a marker write — the outbox copy already reached the shell.
+      const bgDone = []
+      while (bgDoneQueue.length > 0) {
+        const item = bgDoneQueue.shift()
+        if (now - item.ts > cfg.failureTtlSeconds) continue
+        bgDone.push(item)
+        markBgInjected(item.sid)
+      }
+      if (bgDone.length > 0) {
+        event.system.push({
+          type: "text",
+          text:
+            `[zsh-opencode-mini] background session(s) finished (the shell ` +
+            `prompt will not repeat these):\n` +
+            bgDone.map((b) =>
+              `- ${b.sid}${b.ok ? "" : " (with error)"} in ${b.cwd || "unknown cwd"}`,
+            ).join("\n"),
         })
       }
       for (const [name, out] of outputs) {
@@ -571,6 +688,14 @@ export default {
             sid,
             ok: !failed,
             text: `background session ${sid} finished${failed ? " with error" : ""}`,
+          })
+          // Queue for in-session injection; the next context hook delivers
+          // it and marks the sid so the zsh drain skips the outbox copy.
+          bgDoneQueue.push({
+            sid,
+            cwd: ledger.get(sid) ?? "",
+            ok: !failed,
+            ts: Math.floor(Date.now() / 1000),
           })
           for (const [name, recipe] of Object.entries(recipes)) {
             if (recipe.on !== "bg-done") continue

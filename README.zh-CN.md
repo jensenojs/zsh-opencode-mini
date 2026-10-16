@@ -88,6 +88,7 @@ antidote：把 `jensenojs/zsh-opencode-mini` 加进插件清单文件。
 | `shell.passthroughKeys` | `""` | 逗号分隔的键位（如 `"ctrl+r"`），命中时退出 mini 并把字节回放给 shell |
 | `shell.historyRetainMonths` | `6` | 按月 history 文件超过这个月数在 shell 启动时删除；`"off"` 全部保留 |
 | `shell.osc` | `"on"` | 每条命令的 OSC 7777 汇报帧（终端侧接收方的私有协议）；`"off"` 同时省掉每条命令一次 base64 fork |
+| `shell.stderrCapture` | `"on"` | 失败命令 stderr 的最后 ~20 行（4 KB 上限）进失败信号，recipe 和 `zom_context` 能读到原因。通道每个 shell 判定一次：WezTerm 内（pane 探测成功）失败时读 pane 自己的文本尾部，stderr 重定向完全不动；其余情况由一个常驻 `tee` 把 stderr 逐字节回显到终端，同时留 ~256 KB 尾部日志在数据目录。`"off"` 移除两条通道和 stderr 字段 |
 | `shell.failurePrefill` | 内置模板 | 失败后预填的模板（`{cmd}` `{exit}` `{cwd}`；`"off"` 关闭） |
 | `shell.model` | `""` | 给 mini 会话固定模型（`provider/model#variant`）；空则跟随全局默认 |
 | `companion.failureTtlSeconds` | `600` | 失败信号对 AI 保持「新鲜」的秒数 |
@@ -101,10 +102,17 @@ antidote：把 `jensenojs/zsh-opencode-mini` 加进插件清单文件。
 ## 工作原理
 
 - zsh `preexec`/`precmd` hook 把命令元数据追加进本地 JSONL 存储；非零退出
-  额外刷新失败信号。只记元数据，不抓输出。
+  额外刷新失败信号。只记元数据，不抓输出——默认 `shell.stderrCapture: "on"`
+  下唯一的例外是一段有界的 stderr 尾部随失败信号一起走（WezTerm 内读回
+  pane 自己的 scrollback，其余场景是 ~256 KB 的 tee 日志），AI 能读到失败
+  原因，你的终端输出一个字节都不会被吞。
 - opencode 插件把这个存储暴露成 `zom_context` 工具和带新鲜度门槛的
   context 注入；结果与通知经唯一的 `outbox.jsonl` 返回，shell 在每个
   提示符前消费。
+- 后台会话在没有会话开着时完成，会在下一个活会话的 context 里注入
+  （cwd、成功/失败）；shell 侧 drain 跳过已注入的 outbox 记录。一次完成
+  每条通路各出现一次；注入晚于 drain 的罕见竞态下两边都出现，与 outbox
+  本身容忍的 at-least-once 重复是同一口径。
 - shell 侧的退化状态（spawn 钩子失败、history 文件超阈值）追加进
   `notices.jsonl`；companion 在下一次会话把它 drain 进 context 注入，
   日常使用中感知不到的状态由模型主动提起，不会无声烂掉。
