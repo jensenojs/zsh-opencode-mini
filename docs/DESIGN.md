@@ -161,6 +161,14 @@ Parsing convention, same on both sides: **whole-line comments only**, and no
 a full jsonc parser). Internal constants that are *not* configuration (agent
 name, mini flags, OSC code) live in the plugin source as read-only globals.
 
+### Fork shape
+
+The fork branch carries exactly one commit on top of the upstream release tag:
+that commit *is* the patch (`v2.0.32..HEAD` = 1). Work accumulates as several
+commits while it is being written; before tagging, collapse them with
+`git reset --soft <upstream tag>` and a single commit, then push and tag
+`zom-vX.Y.Z.N`. Two commits above the tag means the patch was never collapsed.
+
 The two runtimes also share one data directory. `zom-companion.js` resolves
 `dataDir` the same way `plugin.zsh` does (config value, else XDG), so the
 opencode side reads the store the zsh side writes regardless of how opencode
