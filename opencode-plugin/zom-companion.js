@@ -87,11 +87,36 @@ function configPath() {
   return join(base, "zsh-opencode-mini", "config.toml")
 }
 
+// tomllib is 3.11+; the first python3 on PATH can be an older interpreter
+// (project virtualenv, distro python3.10) and then every read looks like a
+// broken config. Mirror the zsh side: try, in order, and cache the winner.
+let python
+function tomlPython() {
+  if (python) return python
+  const candidates = [process.env.ZOM_PYTHON, "python3", "python3.14", "python3.13", "python3.12", "python3.11"]
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    const probe = spawnSync(candidate, ["-c", "import tomllib"], { encoding: "utf8" })
+    if (probe.status === 0) {
+      python = candidate
+      return python
+    }
+  }
+  return undefined
+}
+
 function loadConfig() {
   const p = configPath()
   if (!existsSync(p)) return {}
-  const run = spawnSync("python3", ["-c", TOML_JSON, p], { encoding: "utf8" })
-  if (run.error) throw new Error(`[zsh-companion] failed to run python3 for ${p}: ${run.error.message}`)
+  const interpreter = tomlPython()
+  if (!interpreter) {
+    throw new Error(
+      `[zsh-companion] no python3 with tomllib (3.11+) found for ${p}. ` +
+        `Set ZOM_PYTHON=/path/to/python3 or install one.`,
+    )
+  }
+  const run = spawnSync(interpreter, ["-c", TOML_JSON, p], { encoding: "utf8" })
+  if (run.error) throw new Error(`[zsh-companion] failed to run ${interpreter} for ${p}: ${run.error.message}`)
   if (run.status !== 0) {
     throw new Error(
       `[zsh-companion] failed to parse ${p}: ${(run.stderr || "").trim()}. ` +

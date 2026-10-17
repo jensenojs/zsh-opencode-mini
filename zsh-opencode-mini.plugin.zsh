@@ -19,11 +19,31 @@
 # configuration.
 ZOM_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/zsh-opencode-mini/config.toml"
 
+# Interpreter with tomllib (3.11+). The first `python3` on PATH is not
+# necessarily it — a project virtualenv or a distro python3.10 shadows it, and
+# then every read fails as "unparsable" for a reason the user cannot see.
+# Resolve once per shell and reuse; ZOM_PYTHON overrides.
+__zom_python() {
+  [[ -n "${__ZOM_PY:-}" ]] && return 0
+  local candidate
+  for candidate in ${=ZOM_PYTHON:-} python3 python3.14 python3.13 python3.12 python3.11; do
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    if "$candidate" -c 'import tomllib' >/dev/null 2>&1; then
+      __ZOM_PY=$candidate
+      return 0
+    fi
+  done
+  print -u2 -- "zsh-opencode-mini: no python3 with tomllib (3.11+) found; config is ignored."
+  print -u2 -- "  set ZOM_PYTHON=/path/to/python3 or install one."
+  return 1
+}
+
 # Normalized JSON view of the TOML document. Empty output + non-zero status
 # means "absent or unparsable", which every caller treats as "use defaults".
 __zom_config_json() {
   [[ -f "$ZOM_CONFIG" ]] || return 1
-  python3 - "$ZOM_CONFIG" <<'PYTOML'
+  __zom_python || return 1
+  "$__ZOM_PY" - "$ZOM_CONFIG" <<'PYTOML'
 import json, sys, tomllib
 try:
     with open(sys.argv[1], "rb") as handle:
@@ -123,6 +143,104 @@ typeset -gA ZOM_DEFAULTS=(
 )
 
 __zom_cfg_load
+
+# ---- Config validation (product surface, not decoration) ------------------
+# Every value below is read individually and normalized, so a typo in a key
+# name is invisible: the real key keeps its default and the shell behaves as
+# if the line were never written. Same for a wrong type, which jq silently
+# turns into an empty string. Both are the kind of failure a user cannot debug
+# from the outside, so the loader reports them once per shell instead of
+# guessing. Values are still read elsewhere; this pass only reports.
+__zom_config_check() {
+  [[ -n "${__ZOM_CONFIG_CHECKED:-}" ]] && return 0
+  __ZOM_CONFIG_CHECKED=1
+  [[ -f "$ZOM_CONFIG" ]] || return 0
+  __zom_python || return 0
+  "$__ZOM_PY" - "$ZOM_CONFIG" <<'PYCHECK'
+import sys
+import tomllib
+
+STR, INT, LIST = "string", "integer", "array"
+# key -> accepted types. Unions are spelled out; "off" as a value of an
+# integer key (historyRetainMonths) is a string and is accepted there.
+SHELL = {
+    "binary": (STR,), "dataDir": (STR,), "keybind": (STR,),
+    "keybindConflict": (STR,), "resume": (STR,), "replay": (STR,),
+    "replayLimit": (INT,), "passthrough": (STR,), "passthroughKeys": (STR,),
+    "historyRetainMonths": (INT, STR), "osc": (STR,), "stderrCapture": (STR,),
+    "failurePrefill": (STR,), "model": (STR,), "leader": (STR,),
+    "failureTtlSeconds": (INT,), "recentDefaultN": (INT,),
+}
+COMPANION = {
+    "failureTtlSeconds": (INT,), "recentDefaultN": (INT,),
+    "repeatFailureThreshold": (INT,),
+}
+RECIPE = {
+    "on": (STR,), "model": (STR,), "prompt": (STR,), "deliver": (STR,),
+    "exitFilter": (LIST,), "ratePerHour": (INT,), "ttlSeconds": (INT,),
+}
+
+def kind(value):
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return INT
+    if isinstance(value, str):
+        return STR
+    if isinstance(value, list):
+        return LIST
+    if isinstance(value, dict):
+        return "table"
+    return type(value).__name__
+
+try:
+    with open(sys.argv[1], "rb") as handle:
+        doc = tomllib.load(handle)
+except Exception:
+    raise SystemExit(0)  # the loader already reports unparsable configs
+
+problems = []
+for section, schema in (("shell", SHELL), ("companion", COMPANION)):
+    table = doc.get(section)
+    if table is None:
+        continue
+    if not isinstance(table, dict):
+        problems.append(f"[{section}] is {kind(table)}, expected a table")
+        continue
+    for key, value in table.items():
+        if key not in schema:
+            problems.append(f"[{section}] {key} is not a known key (ignored)")
+            continue
+        actual = kind(value)
+        if actual not in schema[key]:
+            problems.append(f"[{section}] {key} = {value!r} is {actual}, expected {' or '.join(schema[key])}")
+
+recipes = doc.get("recipes")
+if recipes is not None and not isinstance(recipes, dict):
+    problems.append("[recipes] is not a table")
+elif isinstance(recipes, dict):
+    for name, recipe in recipes.items():
+        if not isinstance(recipe, dict):
+            problems.append(f"[recipes.{name}] is {kind(recipe)}, expected a table")
+            continue
+        for key, value in recipe.items():
+            if key not in RECIPE:
+                problems.append(f"[recipes.{name}] {key} is not a known key (ignored)")
+                continue
+            if kind(value) not in RECIPE[key]:
+                problems.append(f"[recipes.{name}] {key} = {value!r} is {kind(value)}, expected {' or '.join(RECIPE[key])}")
+
+for section in doc:
+    if section not in ("shell", "companion", "recipes"):
+        problems.append(f"[{section}] is not a known section (ignored)")
+
+for line in problems[:6]:
+    print(f"zsh-opencode-mini: config: {line}", file=sys.stderr)
+if len(problems) > 6:
+    print(f"zsh-opencode-mini: config: {len(problems) - 6} more", file=sys.stderr)
+PYCHECK
+}
+__zom_config_check
 
 # ---- Resolution: config table + defaults -> effective shell state ----------
 # Every branch reads the raw ZOM_CFG[...] value and normalizes it (off
