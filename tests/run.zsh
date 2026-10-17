@@ -1208,6 +1208,25 @@ EOFCURL
   cleanup
 }
 
+# S41: the agent prompt ships generic; personal taste lives in the plugin's own
+# config dir and is composed on install, so upgrades never clobber it and the
+# repo never carries one user's preferences.
+t_S41_agent_overlay() {
+  sandbox
+  write_config '{"shell":{"binary":"opencode-zom"}}'
+  local dst="$XDG_CONFIG_HOME/opencode/agent/zsh-companion.md"
+  run_zsh 'true'
+  assert_contains "S41 base prompt installed without overlay" "$(cat "$dst" 2>/dev/null)" "Your working directory IS the directory"
+  print -r -- "Prefer tilth over grep, cat and find." > "$XDG_CONFIG_HOME/zsh-opencode-mini/agent.md"
+  run_zsh 'true'
+  assert_contains "S41 overlay appended to the product prompt" "$(cat "$dst")" "Prefer tilth over grep, cat and find."
+  assert_contains "S41 base prompt survives the overlay" "$(cat "$dst")" "Your working directory IS the directory"
+  rm -f "$XDG_CONFIG_HOME/zsh-opencode-mini/agent.md"
+  run_zsh 'true'
+  assert_not_contains "S41 removing the overlay restores the product prompt" "$(cat "$dst")" "Prefer tilth over grep, cat and find."
+  cleanup
+}
+
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
@@ -1219,7 +1238,7 @@ for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload
          t_S28_external_hook t_S29_size_sentinel t_S30_notices t_S31_spawn_measurement \
          t_S32_prefill_consumed_once t_S33_hook_stdin_tty t_S34_osc_switch \
          t_S35_stderr_tail t_S36_drain_bg_skip t_S37_stderr_dual_mode \
-         t_S38_failure_tty_scope t_S39_hook_registration t_S40_session_dir; do
+         t_S38_failure_tty_scope t_S39_hook_registration t_S40_session_dir t_S41_agent_overlay; do
   print -r -- "[$t]"
   $t
 done

@@ -1372,7 +1372,8 @@ __zom_install_opencode_parts() {
   )
   # Extensions live next to config.toml — the same seam ZOM_CONFIG splits,
   # and the same directory companion.js scans on the way out.
-  local ext_dst="${${ZOM_CONFIG:-$cfg_base/zsh-opencode-mini/config.toml}:h}/extensions"
+  local cfg_dir="${${ZOM_CONFIG:-$cfg_base/zsh-opencode-mini/config.toml}:h}"
+  local ext_dst="$cfg_dir/extensions"
   local part src dst f
   for f in "$src_dir"/extensions/*.js(N); do
     parts+=("extensions/${f:t}:$ext_dst/${f:t}")
@@ -1389,5 +1390,21 @@ __zom_install_opencode_parts() {
     mkdir -p "${dst:h}" 2>/dev/null || continue
     cp -f "$src" "$dst" 2>/dev/null
   done
+  # The shipped agent prompt is product copy — generic, nobody's taste. Taste
+  # belongs in the plugin's own config dir: <cfg_dir>/agent.md is appended to
+  # the base at install, so personal edits survive upgrades and never leak into
+  # the repo. Composition (not a second agent file) because opencode discovers
+  # agents by scanning agent/ under its config roots; there is no runtime hook
+  # to register one, so one file must exist there regardless.
+  local overlay="$cfg_dir/agent.md"
+  local agent_src="$src_dir/agent/zsh-companion.md"
+  local agent_dst="$cfg_base/opencode/agent/zsh-companion.md"
+  if [[ -f "$overlay" && -f "$agent_src" ]]; then
+    local composed
+    composed="${agent_dst}.$$.tmp"
+    { cat "$agent_src"; print; cat "$overlay" } > "$composed" 2>/dev/null &&
+      { cmp -s "$composed" "$agent_dst" || mv -f "$composed" "$agent_dst" }
+    rm -f "$composed" 2>/dev/null
+  fi
 }
 __zom_install_opencode_parts
