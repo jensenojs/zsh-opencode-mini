@@ -50,7 +50,6 @@ const notice = () => ({
   ],
 })
 
-const MINI_AGENT = "zsh-companion"
 
 export default {
   id: "zom-cache-watch",
@@ -67,7 +66,7 @@ export default {
       // Only the mini's own conversation gets this notice. Every other agent
       // (the main TUI, subagents) shares the server but not this concern, and
       // its prefix changes for reasons that are none of its business.
-      if (event.agent !== MINI_AGENT) return
+      if (event.agent !== host.agent) return
       const id = event.sessionID
       const dir = process.cwd()
       const hash = hashOf(event.system ?? [], event.tools)

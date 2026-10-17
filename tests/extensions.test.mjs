@@ -41,10 +41,11 @@ function makeCtx() {
   }
 }
 
-function makeHost(backend = new Map()) {
+function makeHost(backend = new Map(), agent = "mini") {
   const reports = []
   const listeners = []
   const host = {
+    agent,
     report: (m) => reports.push(String(m)),
     onUsageDelta: (cb) => listeners.push(cb),
     storage: (key) => ({
@@ -72,7 +73,7 @@ function delta(ext, sid, dInput, dRead) {
   const prefix = (extra = "") => [{ type: "text", text: "core instructions" + extra }]
   const turn = (c, system) => {
     const messages = []
-    c.fire("context", { sessionID: sid, system, messages, agent: "zsh-companion" })
+    c.fire("context", { sessionID: sid, system, messages, agent: "mini" })
     return messages.map((m) => m.content.map((p) => p.text).join(""))
   }
 
@@ -99,7 +100,7 @@ function delta(ext, sid, dInput, dRead) {
   check("fires once per change", turn(c, prefix(" v2")).length === 0)
   {
     const other = []
-    c.fire("context", { sessionID: "ses_build", system: prefix(" other"), messages: other, agent: "build" })
+    c.fire("context", { sessionID: "ses_build", system: prefix(" other"), messages: other, agent: "orchestrator" })
     check("other agents' sessions get nothing", other.length === 0)
     check("other agents' sessions are not tracked", !JSON.parse(shared.get("zom-cache-watch")).hashes.ses_build)
   }
@@ -193,11 +194,15 @@ function delta(ext, sid, dInput, dRead) {
   process.env.ZOM_CONFIG = join(cfgDir, "config.toml")
   const { ctx, fire } = makeCtx()
   await loadExtensions(ctx, dataDir)
-  const event = { system: [], messages: [] }
+  const event = { system: [], messages: [], agent: "mini" }
   // Turn 1: hooks run, boomer's throw is caught and reported for next turn.
   // Turn 2: the drain surfaces everything reported so far.
   fire("context", event)
   fire("context", event)
+  // A host-level failure must not follow the user into unrelated sessions.
+  const other = { system: [], messages: [], agent: "build" }
+  fire("context", other)
+  check("extension problems stay out of other agents' sessions", other.messages.length === 0)
   process.env.ZOM_CONFIG = prevCfg
 
   // Two files claim id "good": refusing both is the contract — running the

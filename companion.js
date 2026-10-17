@@ -38,9 +38,9 @@ import {
   renameSync,
   readdirSync,
   statSync,
+  unlinkSync,
 } from "node:fs"
 import { spawnSync } from "node:child_process"
-import { tmpdir } from "node:os"
 import { copyFileSync } from "node:fs"
 import { pathToFileURL } from "node:url"
 import { randomUUID } from "node:crypto"
@@ -101,7 +101,11 @@ function configPath() {
 // host's config dir. Agent discovery is directory-based, but a plugin may seed
 // the registry: update() on an unknown id starts from Agent.Info.default
 // (packages/core/src/agent.ts:63), and Agent.Info carries `system`.
-const AGENT_ID = "zsh-companion"
+const DEFAULT_AGENT = "mini"
+// shell.agent picks the id; the zsh side passes the same value as --agent, so
+// the launch and the registration below share one source. Resolved per load
+// (not cached across loads) so a renamed agent in one sandbox cannot leak into
+// the next setup in the same process.
 const AGENT_DESCRIPTION =
   "Terminal companion: short answers, reads the scene with tools, queries history on demand"
 // Generic on purpose: it only seeds the user's copy. What runs is the file.
@@ -163,15 +167,15 @@ function loadConfig() {
   const interpreter = tomlPython()
   if (!interpreter) {
     throw new Error(
-      `[zsh-companion] no python3 with tomllib (3.11+) found for ${p}. ` +
+      `[zom] no python3 with tomllib (3.11+) found for ${p}. ` +
         `Set ZOM_PYTHON=/path/to/python3 or install one.`,
     )
   }
   const run = spawnSync(interpreter, ["-c", TOML_JSON, p], { encoding: "utf8" })
-  if (run.error) throw new Error(`[zsh-companion] failed to run ${interpreter} for ${p}: ${run.error.message}`)
+  if (run.error) throw new Error(`[zom] failed to run ${interpreter} for ${p}: ${run.error.message}`)
   if (run.status !== 0) {
     throw new Error(
-      `[zsh-companion] failed to parse ${p}: ${(run.stderr || "").trim()}. ` +
+      `[zom] failed to parse ${p}: ${(run.stderr || "").trim()}. ` +
         `Fix the file or remove it to run on defaults.`,
     )
   }
@@ -192,7 +196,7 @@ function parseModel(spec) {
   const idx = String(spec ?? "").indexOf("/")
   if (idx <= 0 || idx === String(spec).length - 1) {
     throw new Error(
-      `[zsh-companion] recipe model must be "provider/model-id", got: ${JSON.stringify(spec)}`,
+      `[zom] recipe model must be "provider/model-id", got: ${JSON.stringify(spec)}`,
     )
   }
   return { providerID: spec.slice(0, idx), id: spec.slice(idx + 1) }
@@ -203,14 +207,14 @@ function compileRecipes(raw) {
   for (const [name, r] of Object.entries(raw ?? {})) {
     if (!RECIPE_NAME.test(name)) {
       throw new Error(
-        `[zsh-companion] recipe name ${JSON.stringify(name)} must match ${RECIPE_NAME} ` +
+        `[zom] recipe name ${JSON.stringify(name)} must match ${RECIPE_NAME} ` +
           `(it becomes a tool name and a storage/outbox key component).`,
       )
     }
     const trigger = TRIGGERS[r?.on]
     if (!trigger) {
       throw new Error(
-        `[zsh-companion] recipe "${name}": unknown on value ${JSON.stringify(r?.on)} ` +
+        `[zom] recipe "${name}": unknown on value ${JSON.stringify(r?.on)} ` +
           `(expected one of ${Object.keys(TRIGGERS).join(", ")}).`,
       )
     }
@@ -223,20 +227,20 @@ function compileRecipes(raw) {
     ].filter((s) => !trigger.slots.includes(s))
     if (unknownSlots.length > 0) {
       throw new Error(
-        `[zsh-companion] recipe "${name}": prompt slot(s) ` +
+        `[zom] recipe "${name}": prompt slot(s) ` +
           `${unknownSlots.map((s) => `{${s}}`).join(" ")} not provided by the ` +
           `${JSON.stringify(r.on)} trigger (provides: ${trigger.slots.join(", ")}).`,
       )
     }
     if (!RECIPE_DELIVER.includes(r?.deliver)) {
       throw new Error(
-        `[zsh-companion] recipe "${name}": unknown deliver value ${JSON.stringify(r?.deliver)} ` +
+        `[zom] recipe "${name}": unknown deliver value ${JSON.stringify(r?.deliver)} ` +
           `(expected one of ${RECIPE_DELIVER.join(", ")}).`,
       )
     }
     parseModel(r.model) // validate now; recipes never fire with a bad model spec
     if (r.exitFilter !== undefined && !(Array.isArray(r.exitFilter) && r.exitFilter.every(Number.isInteger))) {
-      throw new Error(`[zsh-companion] recipe "${name}": exitFilter must be an array of integers.`)
+      throw new Error(`[zom] recipe "${name}": exitFilter must be an array of integers.`)
     }
     out[name] = { ...r, ttlSeconds: r.ttlSeconds ?? DEFAULTS.recipeTtlSeconds }
   }
@@ -269,7 +273,7 @@ function assertContract(ctx, extraSurfaces = []) {
   const major = Number(version.split(".")[0])
   if (major !== CONTRACT.major && !CHANNEL_BUILD.test(version)) {
     throw new Error(
-      `[zsh-companion] plugin API mismatch: built for V${CONTRACT.major}, ` +
+      `[zom] plugin API mismatch: built for V${CONTRACT.major}, ` +
         `running on OpenCode ${version || "<version unreadable>"}. ` +
         `Refusing to load half-working. Re-verify against ${CONTRACT.docs} ` +
         `(last verified ${CONTRACT.verified}).`,
@@ -278,7 +282,7 @@ function assertContract(ctx, extraSurfaces = []) {
   for (const [name, probe] of [...CONTRACT.surfaces, ...extraSurfaces]) {
     if (!probe(ctx)) {
       throw new Error(
-        `[zsh-companion] missing plugin API surface: ${name} (OpenCode ${version}). ` +
+        `[zom] missing plugin API surface: ${name} (OpenCode ${version}). ` +
           `The V2 plugin API shape has changed — re-verify against ${CONTRACT.docs}.`,
       )
     }
@@ -402,6 +406,11 @@ export default {
     // One parse per load (the config feeds contract probes, companion config,
     // dataDir and recipes alike).
     const fullCfg = loadConfig()
+    const configuredAgent = fullCfg?.shell?.agent
+    const agentID =
+      typeof configuredAgent === "string" && configuredAgent.trim() !== ""
+        ? configuredAgent.trim()
+        : DEFAULT_AGENT
     const cfg = { ...DEFAULTS, ...fullCfg?.companion }
     const dataDir = shellDataDir(fullCfg)
     const recipes = compileRecipes(fullCfg?.recipes)
@@ -437,7 +446,7 @@ export default {
     // its prompt are seeded here, re-seeded on every domain reload so an edit
     // to <config dir>/agent.md lands without a restart.
     ctx.agent.transform((agent) => {
-      agent.update(AGENT_ID, (item) => {
+      agent.update(agentID, (item) => {
         item.system = agentSystemPrompt()
         item.description = AGENT_DESCRIPTION
         item.mode = "primary"
@@ -666,7 +675,7 @@ export default {
     ctx.session.hook("context", (event) => {
       // The zsh side exists for the mini summon; other agents on this server
       // (main TUI, subagents) must not receive zom notices in their context.
-      if (event.agent !== MINI_AGENT) return
+      if (event.agent !== agentID) return
       const now = Math.floor(Date.now() / 1000)
       const sig = readFailureSignal(dataDir, cfg.failureTtlSeconds)
       // Same terminal scope as the tool: another pane's failure must not enter
@@ -825,7 +834,7 @@ export default {
     // Await registration: hooks added after setup resolves are invisible to
     // requests already being assembled, and the symptom is a plugin that
     // silently stops seeing context while `loading plugin` still logs fine.
-    await loadExtensions(ctx, dataDir)
+    await loadExtensions(ctx, dataDir, agentID)
 
     return () => {
       watcher.close()
@@ -852,7 +861,6 @@ export default {
 //   host.dataDir            the shell data dir the storage lives in
 // Hook registration aggregates across callers, so an extension can still
 // register its own session.hook("context").
-const MINI_AGENT = "zsh-companion"
 const extensionProblems = [] // { name, msg, ts } awaiting delivery
 const extensionReportedAt = new Map() // name\0msg -> ts of last report
 const EXTENSION_REPORT_COOLDOWN_MS = 10 * 60 * 1000
@@ -944,7 +952,7 @@ function dispatchUsage(p) {
   }
 }
 
-export async function loadExtensions(ctx, dataDir) {
+export async function loadExtensions(ctx, dataDir, agentID = DEFAULT_AGENT) {
   // Extensions live next to config.toml, wherever ZOM_CONFIG points the
   // config — same rule the zsh installer mirrors on the way in.
   const dir = join(dirname(configPath()), "extensions")
@@ -955,6 +963,10 @@ export async function loadExtensions(ctx, dataDir) {
     return // no extensions dir — nothing to load, not an error
   }
   ctx.session.hook("context", (event) => {
+    // A broken extension is a fact about this host, not about the session the
+    // user opened: injecting it everywhere makes every session apologize for
+    // something it did not do. Only the companion's own agent hears about it.
+    if (event.agent !== agentID) return
     const now = Math.floor(Date.now() / 1000)
     const pending = []
     while (extensionProblems.length > 0) {
@@ -978,6 +990,23 @@ export async function loadExtensions(ctx, dataDir) {
     })
   })
   const loaded = []
+  // Stage inside the plugin's own data dir: $TMPDIR is swept by the OS and by
+  // anything else that decides to clean it, and a swept file turns into
+  // "Cannot find module" at import time. This directory is ours to prune.
+  const stageDir = join(dataDir, "ext-staged")
+  try {
+    mkdirSync(stageDir, { recursive: true })
+    const cutoff = Date.now() - 60 * 60 * 1000
+    for (const f of readdirSync(stageDir)) {
+      try {
+        if (statSync(join(stageDir, f)).mtimeMs < cutoff) unlinkSync(join(stageDir, f))
+      } catch {
+        // already gone
+      }
+    }
+  } catch {
+    return // data dir unusable — nothing can be staged
+  }
   for (const name of entries) {
     const file = join(dir, name)
     let id = name.replace(/\.js$/, "")
@@ -987,7 +1016,7 @@ export async function loadExtensions(ctx, dataDir) {
       // runtime already evaluated — the cache key is the path, and a query
       // string is not enough under every runtime. Import a private copy so the
       // running code is always the bytes on disk.
-      const staged = join(tmpdir(), `zom-ext-${process.pid}-${statSync(file).mtimeMs}-${name}`)
+      const staged = join(stageDir, `ext-${process.pid}-${statSync(file).mtimeMs}-${name}`)
       copyFileSync(file, staged)
       mod = await import(pathToFileURL(staged).href)
     } catch (e) {
@@ -1026,6 +1055,9 @@ export async function loadExtensions(ctx, dataDir) {
         }),
       storage: (key) => extensionStorage(dataDir, key),
       dataDir,
+      // The agent id this load registered under; extensions gate on it rather
+      // than hard-coding a name that the config may have changed.
+      agent: agentID,
     }
     // A hook the extension registers must not be able to break context
     // assembly for everyone else: wrap handlers one by one, attribute

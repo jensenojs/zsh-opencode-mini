@@ -23,7 +23,7 @@
 #     S5  OSC frame: stdout carries ESC]7777;zom;v1;<base64> and the decoded
 #         payload round-trips to the same JSON
 #   Launcher (mock opencode-zom in tests/bin):
-#     S6  zom: mock receives `mini -c --agent zsh-companion`
+#     S6  zom: mock receives `mini -c --agent mini`
 #     S7  zom-last: prompt contains the recorded failing command
 #   Configuration (config.toml, the single config file):
 #     S8  keybind: default ^X bound; keybind:"" in config suppresses it
@@ -252,7 +252,7 @@ t_S6_zom_launch() {
   run_zsh 'zom extra-arg' >/dev/null 2>&1
   local log
   log=$(cat "$ZOM_MOCK_LOG")
-  assert_contains "S6 default resume=main pins session" "$log" "argv=mini -s ses_zom-main --replay-limit 50 --agent zsh-companion --leader ctrl+m extra-arg"
+  assert_contains "S6 default resume=main pins session" "$log" "argv=mini -s ses_zom-main --replay-limit 50 --agent mini --leader ctrl+m extra-arg"
   cleanup
   sandbox
   write_config <<'EOF'
@@ -260,7 +260,7 @@ t_S6_zom_launch() {
 EOF
   run_zsh 'zom extra-arg' >/dev/null 2>&1
   log=$(cat "$ZOM_MOCK_LOG")
-  assert_contains "S6 resume=off starts fresh" "$log" "argv=mini --agent zsh-companion --leader ctrl+m extra-arg"
+  assert_contains "S6 resume=off starts fresh" "$log" "argv=mini --agent mini --leader ctrl+m extra-arg"
   cleanup
   sandbox
   write_config <<'EOF'
@@ -268,7 +268,7 @@ EOF
 EOF
   run_zsh 'zom extra-arg' >/dev/null 2>&1
   log=$(cat "$ZOM_MOCK_LOG")
-  assert_contains "S6 replay=off passes --no-replay" "$log" "argv=mini -s ses_zom-main --no-replay --agent zsh-companion --leader ctrl+m extra-arg"
+  assert_contains "S6 replay=off passes --no-replay" "$log" "argv=mini -s ses_zom-main --no-replay --agent mini --leader ctrl+m extra-arg"
   cleanup
   sandbox
   write_config <<'EOF'
@@ -276,7 +276,7 @@ EOF
 EOF
   run_zsh 'zom extra-arg' >/dev/null 2>&1
   log=$(cat "$ZOM_MOCK_LOG")
-  assert_contains "S6 replayLimit honoured" "$log" "argv=mini -s ses_zom-main --replay-limit 7 --agent zsh-companion --leader ctrl+m extra-arg"
+  assert_contains "S6 replayLimit honoured" "$log" "argv=mini -s ses_zom-main --replay-limit 7 --agent mini --leader ctrl+m extra-arg"
   cleanup
   sandbox
   run_command 'git push --force' 'false'   # record a fresh failure

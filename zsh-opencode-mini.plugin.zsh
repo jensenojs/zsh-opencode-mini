@@ -69,6 +69,7 @@ __zom_cfg_load() {
     ZOM_CFG[keybind]=""
     ZOM_CFG[keybindConflict]=""
     ZOM_CFG[dataDir]=""
+    ZOM_CFG[agent]=""
     ZOM_CFG[resume]=""
     ZOM_CFG[replay]=""
     ZOM_CFG[replayLimit]=""
@@ -91,6 +92,7 @@ __zom_cfg_load() {
     "ZOM_CFG[keybind]="           + (($s.keybind        // "") | @sh),
     "ZOM_CFG[keybindConflict]="   + (($s.keybindConflict // "") | @sh),
     "ZOM_CFG[dataDir]="           + (($s.dataDir        // "") | @sh),
+    "ZOM_CFG[agent]="             + (($s.agent          // "") | @sh),
     "ZOM_CFG[resume]="            + (($s.resume         // "") | @sh),
     "ZOM_CFG[replay]="            + (($s.replay         // "") | @sh),
     "ZOM_CFG[replayLimit]="       + (($s.replayLimit    // "") | @sh),
@@ -127,6 +129,7 @@ typeset -gA ZOM_DEFAULTS=(
   [keybind]="^X"
   [keybindConflict]="notify"
   [dataDir]="${XDG_DATA_HOME:-$HOME/.local/share}/zsh-opencode-mini"
+  [agent]="mini"
   [resume]="main"
   [replay]="on"
   [replayLimit]="50"
@@ -164,7 +167,7 @@ STR, INT, LIST = "string", "integer", "array"
 # key -> accepted types. Unions are spelled out; "off" as a value of an
 # integer key (historyRetainMonths) is a string and is accepted there.
 SHELL = {
-    "binary": (STR,), "dataDir": (STR,), "keybind": (STR,),
+    "binary": (STR,), "dataDir": (STR,), "agent": (STR,), "keybind": (STR,),
     "keybindConflict": (STR,), "resume": (STR,), "replay": (STR,),
     "replayLimit": (INT,), "passthrough": (STR,), "passthroughKeys": (STR,),
     "historyRetainMonths": (INT, STR), "osc": (STR,), "stderrCapture": (STR,),
@@ -322,7 +325,6 @@ __zom_is_uint() {
 }
 
 # ---- Internal defaults (not configuration; edit the source if you must) ----
-(( $+ZOM_AGENT )) || typeset -gr ZOM_AGENT="zsh-companion"   # agent name, seeded by companion.js at load
 (( $+ZOM_MAIN_SESSION )) || typeset -gr ZOM_MAIN_SESSION="ses_zom-main"  # the dedicated assistant session ("resume": "main")
 # Replay behaviour when resuming the main session (v2.0.21 mini source:
 # opening prints the newest N messages into the terminal scrollback, N
@@ -979,7 +981,10 @@ __zom_mini_argv() {
       off) ZOM_ARGV+=(--no-replay) ;;
     esac
   fi
-  ZOM_ARGV+=(--agent "$ZOM_AGENT")
+  # One source for the agent id: this config key. companion.js reads the same
+  # key and registers its agent under it, so the launch and the definition
+  # cannot drift apart.
+  ZOM_ARGV+=(--agent "${ZOM_CFG[agent]:-${ZOM_DEFAULTS[agent]}}")
   # The leader is a mini-side knob: the main TUI keeps cli.json's leader, and
   # mini gets its own because its dismiss key owns ctrl+x.
   local leader=${ZOM_CFG[leader]:-${ZOM_DEFAULTS[leader]}}
@@ -1297,6 +1302,7 @@ zom-config() {
   __zom_cfg_line stderrCapture  "$ZOM_STDERR_CAPTURE"
   __zom_cfg_line failurePrefill "$ZOM_FAILURE_PREFILL_TMPL"
   __zom_cfg_line model          "${ZOM_CFG[model]}"
+  __zom_cfg_line agent          "${ZOM_CFG[agent]:-${ZOM_DEFAULTS[agent]}}"
   __zom_cfg_line leader         "${ZOM_CFG[leader]:-${ZOM_DEFAULTS[leader]}}"
   print -r -- "companion (read by the opencode-side plugin, per session):"
   __zom_cfg_line failureTtlSeconds "$ZOM_FAILURE_TTL"

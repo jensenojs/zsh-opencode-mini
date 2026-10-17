@@ -47,6 +47,12 @@ replayLimit = 50
 # absolute path to use a specific build.
 # binary = "opencode-zom"
 
+# Agent id mini runs as. companion.js registers its agent under the same name,
+# so this key feeds the launch flag and the agent definition alike: rename it
+# here and the registration, the notice gate and the extensions follow on the
+# next load. Deleting the key falls back to "mini".
+agent = "mini"
+
 # Keys nobody claims inside mini (not a keymap action, not composer input):
 # "on" (default) logs them to <dataDir>/passthrough.<pid>.keys.log (rolling
 # cap, newest kept) and mini keeps running — an unhandled key never kills the

@@ -206,7 +206,7 @@ function makeCtx({ version = "2.0.21", omit = [] } = {}) {
   return { ctx, state }
 }
 
-const contextEvent = () => ({ system: [], messages: [], agent: "zsh-companion" })
+const contextEvent = () => ({ system: [], messages: [], agent: "mini" })
 
 const readOutbox = (dataDir) =>
   existsSync(join(dataDir, "outbox.jsonl"))
@@ -228,7 +228,7 @@ try {
 
   // 1b. the agent is seeded by the plugin, not by a markdown file in the host
   // config dir; personal taste is appended from the plugin's own config dir.
-  const seeded = state.agents["zsh-companion"]
+  const seeded = state.agents["mini"]
   seeded && seeded.mode === "primary" && seeded.hidden === true &&
   seeded.system.includes("You run inside the user's terminal")
     ? ok("agent seeded at load")
@@ -238,10 +238,29 @@ try {
   writeFileSync(promptFile, "Prefer tilth over grep.\n")
   const reloaded = makeCtx()
   await plugin.setup(reloaded.ctx)
-  reloaded.state.agents["zsh-companion"].system === "Prefer tilth over grep.\n"
+  reloaded.state.agents["mini"].system === "Prefer tilth over grep.\n"
     ? ok("agent.md is the prompt")
-    : bad("agent.md is the prompt", JSON.stringify(reloaded.state.agents["zsh-companion"].system))
+    : bad("agent.md is the prompt", JSON.stringify(reloaded.state.agents["mini"].system))
   rmSync(promptFile, { force: true })
+
+  // 1c. the agent id is configuration, not a constant: shell.agent renames it,
+  // and the same value must both register the agent and gate injection.
+  shared.write({ shell: { agent: "renamed-companion" }, companion: { failureTtlSeconds: TTL } })
+  const renamed = makeCtx()
+  await plugin.setup(renamed.ctx)
+  const renamedAgent = renamed.state.agents["renamed-companion"]
+  renamedAgent && renamedAgent.mode === "primary"
+    ? ok("shell.agent names the agent")
+    : bad("shell.agent names the agent", JSON.stringify(Object.keys(renamed.state.agents)))
+  signal(now - 30)
+  const oldName = { system: [], messages: [], agent: "mini" }
+  renamed.state.contextHooks[0](oldName)
+  const newName = { system: [], messages: [], agent: "renamed-companion" }
+  renamed.state.contextHooks[0](newName)
+  oldName.system.length === 0 && newName.system.length === 1
+    ? ok("shell.agent gates injection")
+    : bad("shell.agent gates injection", `old=${oldName.system.length} new=${newName.system.length}`)
+  rmSync(shared.cfgPath, { force: true })
 
   // 2. fresh failure -> injected
   signal(now - 30)
