@@ -1,4 +1,4 @@
-// Unit test for opencode-plugin/zom-companion.js, driven on a mock plugin ctx.
+// Unit test for companion.js, driven on a mock plugin ctx.
 // Run by tests/run.zsh (S10) via node; prints PASS/FAIL lines, exits 1 on any fail.
 //
 // What is covered:
@@ -26,7 +26,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, exists
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-const plugin = (await import("../opencode-plugin/zom-companion.js")).default
+const plugin = (await import("../companion.js")).default
 
 let pass = 0
 let fail = 0
@@ -191,7 +191,7 @@ function makeCtx({ version = "2.0.21", omit = [] } = {}) {
   return { ctx, state }
 }
 
-const contextEvent = () => ({ system: [] })
+const contextEvent = () => ({ system: [], messages: [], agent: "zsh-companion" })
 
 const readOutbox = (dataDir) =>
   existsSync(join(dataDir, "outbox.jsonl"))

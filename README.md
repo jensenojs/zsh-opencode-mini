@@ -19,10 +19,10 @@ AI read your shell history) and the zsh side (recording + keybind).
 git clone https://github.com/jensenojs/zsh-opencode-mini
 cd zsh-opencode-mini
 
-# opencode side: symlinks, so updates follow the repo
-mkdir -p ~/.config/opencode/agent ~/.config/opencode/plugins
-ln -sf "$PWD/agent/zsh-companion.md" ~/.config/opencode/agent/zsh-companion.md
-ln -sf "$PWD/opencode-plugin/zom-companion.js" ~/.config/opencode/plugins/zom-companion.js
+# opencode side: installed automatically on shell load — the plugin copies
+# companion.js, the agent prompt and extensions/ into ~/.config/opencode/
+# (and its own extensions dir), refreshing them whenever they differ
+# (XDG_CONFIG_HOME is honored)
 
 # the mini binary (zom fork of opencode, from GitHub Releases)
 bash scripts/install-zom-binary.sh

@@ -15,10 +15,9 @@
 git clone https://github.com/jensenojs/zsh-opencode-mini
 cd zsh-opencode-mini
 
-# opencode 侧：软链，之后更新跟随仓库
-mkdir -p ~/.config/opencode/agent ~/.config/opencode/plugins
-ln -sf "$PWD/agent/zsh-companion.md" ~/.config/opencode/agent/zsh-companion.md
-ln -sf "$PWD/opencode-plugin/zom-companion.js" ~/.config/opencode/plugins/zom-companion.js
+# opencode 侧：不用手动装。首次加载插件时自动把 companion.js、agent 提示词
+# 和 extensions/ 复制到 ~/.config/opencode/（认 XDG_CONFIG_HOME），内容有
+# 变化时自动刷新
 
 # mini 用的二进制（opencode 的 zom fork，从 GitHub Releases 装）
 bash scripts/install-zom-binary.sh

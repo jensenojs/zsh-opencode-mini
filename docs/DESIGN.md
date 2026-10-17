@@ -202,11 +202,11 @@ zsh-opencode-mini/
 ├── zsh-opencode-mini.plugin.zsh    # zsh side: record + signal + OSC + outbox drain + zom-bg + launcher
 ├── agent/
 │   └── zsh-companion.md            # opencode agent: behavior rules only
-├── opencode-plugin/
-│   └── zom-companion.js            # opencode side: contract check + zom_context + context hook + recipes + outbox
+├── companion.js                      # opencode side: contract check + zom_context + context hook + recipes + outbox + extension host
+├── extensions/                       # policy modules loaded by companion.js (cache-watch, state-watch)
 └── tests/
     ├── run.zsh                     # integration suite S1-S17 (sandboxed zsh + mock opencode)
-    ├── companion.test.mjs          # unit test for zom-companion.js (mock V2/V3 ctx)
+    ├── companion.test.mjs          # unit test for companion.js (mock ctx)
     └── bin/opencode                # mock opencode binary
 ```
 
@@ -223,28 +223,19 @@ Runtime data (separate from code):
 
 ## Install
 
-Three steps, two ecosystems. Steps 1–2 are **opencode-side assets** (the
-agent definition and the companion plugin — this is where the AI gets its
-abilities: the history tool, failure awareness, recipes). Step 3 is the
-**zsh side** (recording, keybind, outbox consumer). The zsh plugin manager
-(section below) only covers step 3; steps 1–2 are just two symlinks because
-that is opencode's plugin mechanism — new files in `plugins/`, nothing
-existing is modified. Skipping steps 1–2 leaves the zsh plugin working but
-the AI blind: no history tool, no failure signal, no recipes.
+Two ecosystems. The **opencode-side assets** (agent definition, companion
+plugin, extensions) need no manual steps: on shell load the plugin copies
+them into place — `companion.js` to `~/.config/opencode/plugins/`, the agent
+prompt to `~/.config/opencode/agent/`, `extensions/` mirrored into
+`~/.config/zsh-opencode-mini/extensions/` (`XDG_CONFIG_HOME` honored), each
+refreshed when it differs. The **zsh side** is one rc line (recording,
+keybind, outbox consumer, launcher). Skipping the rc line leaves the zsh
+plugin uninstalled; once it loads, the AI side comes with it.
 
 ```zsh
 git clone <this-repo> ~/Projects/zsh-opencode-mini
 
-# 1. agent -> opencode config
-mkdir -p ~/.config/opencode/agent
-ln -sf ~/Projects/zsh-opencode-mini/agent/zsh-companion.md \
-       ~/.config/opencode/agent/zsh-companion.md
-
-# 2. companion plugin -> opencode plugins
-ln -sf ~/Projects/zsh-opencode-mini/opencode-plugin/zom-companion.js \
-       ~/.config/opencode/plugins/zom-companion.js
-
-# 3. zshrc.d entry
+# 1. zshrc.d entry
 echo 'source ~/Projects/zsh-opencode-mini/zsh-opencode-mini.plugin.zsh' \
   > ~/.config/zsh/zshrc.d/35-zsh-opencode-mini.zsh
 ```

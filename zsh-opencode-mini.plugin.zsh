@@ -8,11 +8,11 @@
 #
 # Configuration is deliberately minimal: only what is genuinely shell-side
 # (data path, summon keybind). Strategy knobs live on the opencode side, in
-# the jsonc config read by opencode-plugin/zom-companion.js — see README.md.
+# the jsonc config read by companion.js — see README.md.
 
 # ---- Configuration: one TOML file, two consumers ----
 # ~/.config/zsh-opencode-mini/config.toml — its "shell" section is read here,
-# its "companion" and "recipes" sections by opencode-plugin/zom-companion.js.
+# its "companion" and "recipes" sections by companion.js.
 # Both sides parse the same document with python's tomllib, so there is exactly
 # one parser and no JSON shim to drift. There is no env-var configuration
 # surface. Missing file / missing keys -> defaults; the plugin works with zero
@@ -692,7 +692,7 @@ __zom_precmd() {
 }
 
 # ---- outbox: the cross-side return channel ----
-# opencode-plugin/zom-companion.js is the only writer of outbox.jsonl (recipe
+# companion.js is the only writer of outbox.jsonl (recipe
 # results, background-session finish notices — one JSON record per line,
 # always carrying a .text). zsh consumes it here with a byte cursor:
 # outbox.cursor stores the offset of the first unread byte. Steady state (no
@@ -1336,26 +1336,35 @@ if [[ -d "$ZOM_DATA_DIR" ]]; then
 fi
 
 # ---- opencode-side parts ----
-# The zsh half is this file; the AI half is two separate artifacts (the
-# companion plugin and the agent definition). Plugin managers only source
-# this file, so "install the plugin" used to still leave the AI side blind
-# until someone ran the two ln -sf lines from the README. Create them here
-# instead: one stat per part per shell, and never touch an existing file or
-# symlink (a user may point it at a working checkout).
-__zom_link_opencode_parts() {
+# The zsh half is this file; the AI half (companion plugin, agent definition,
+# extensions) is installed from here, because plugin managers only source this
+# file. Real copies, refreshed when they differ, never symlinks: opencode's
+# config must not couple to a checkout that can be mid-edit or removed.
+__zom_install_opencode_parts() {
+  local cfg_base="${XDG_CONFIG_HOME:-$HOME/.config}"
   local src_dir="${${(%):-%x}:A:h}"
   local -a parts=(
-    "opencode-plugin/zom-companion.js:$HOME/.config/opencode/plugins/zom-companion.js"
-    "agent/zsh-companion.md:$HOME/.config/opencode/agent/zsh-companion.md"
+    "companion.js:$cfg_base/opencode/plugins/zom-companion.js"
+    "agent/zsh-companion.md:$cfg_base/opencode/agent/zsh-companion.md"
   )
-  local part src dst
+  # Extensions live next to config.toml — the same seam ZOM_CONFIG splits,
+  # and the same directory companion.js scans on the way out.
+  local ext_dst="${${ZOM_CONFIG:-$cfg_base/zsh-opencode-mini/config.toml}:h}/extensions"
+  local part src dst f
+  for f in "$src_dir"/extensions/*.js(N); do
+    parts+=("extensions/${f:t}:$ext_dst/${f:t}")
+  done
+  for f in "$ext_dst"/*.js(N); do
+    [[ -f "$src_dir/extensions/${f:t}" ]] || rm -f "$f"
+  done
   for part in $parts; do
     src="$src_dir/${part%%:*}"
     dst="${part#*:}"
-    [[ -e "$dst" || -L "$dst" ]] && continue
     [[ -f "$src" ]] || continue
+    [[ -L "$dst" ]] && rm -f "$dst"
+    [[ -f "$dst" ]] && cmp -s "$src" "$dst" && continue
     mkdir -p "${dst:h}" 2>/dev/null || continue
-    ln -s "$src" "$dst" 2>/dev/null
+    cp -f "$src" "$dst" 2>/dev/null
   done
 }
-__zom_link_opencode_parts
+__zom_install_opencode_parts

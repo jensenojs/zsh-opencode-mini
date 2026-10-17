@@ -1,7 +1,7 @@
 # zsh-opencode-mini configuration.
 # One file, two consumers:
 #   - [shell]: read by zsh-opencode-mini.plugin.zsh
-#   - [companion] and [recipes]: read by opencode-plugin/zom-companion.js
+#   - [companion] and [recipes]: read by companion.js
 # Both sides parse it with python's tomllib, so there is one parser and no
 # dialect drift. Copy to ~/.config/zsh-opencode-mini/config.toml to activate.
 # Every key is optional; the values shown are the defaults. Comment a key out

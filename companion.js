@@ -36,11 +36,16 @@ import {
   mkdirSync,
   writeFileSync,
   renameSync,
+  readdirSync,
+  statSync,
 } from "node:fs"
 import { spawnSync } from "node:child_process"
+import { tmpdir } from "node:os"
+import { copyFileSync } from "node:fs"
+import { pathToFileURL } from "node:url"
 import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { join, dirname } from "node:path"
 
 const DEFAULTS = {
   failureTtlSeconds: 600,
@@ -83,8 +88,13 @@ const TOML_JSON = [
 ].join("\n")
 
 function configPath() {
-  const base = process.env.XDG_CONFIG_HOME || join(homedir(), ".config")
-  return join(base, "zsh-opencode-mini", "config.toml")
+  // The zsh side reads ZOM_CONFIG (see the plugin); honor it here too so both
+  // halves always split config at the same seam. Default is the XDG location.
+  return process.env.ZOM_CONFIG || join(
+    process.env.XDG_CONFIG_HOME || join(homedir(), ".config"),
+    "zsh-opencode-mini",
+    "config.toml",
+  )
 }
 
 // tomllib is 3.11+; the first python3 on PATH can be an older interpreter
@@ -599,6 +609,9 @@ export default {
     // recipe outputs still inside their TTL. Default (no signals) = zero
     // injection. One line max per signal — the tool above is the door to more.
     ctx.session.hook("context", (event) => {
+      // The zsh side exists for the mini summon; other agents on this server
+      // (main TUI, subagents) must not receive zom notices in their context.
+      if (event.agent !== MINI_AGENT) return
       const now = Math.floor(Date.now() / 1000)
       const sig = readFailureSignal(dataDir, cfg.failureTtlSeconds)
       // Same terminal scope as the tool: another pane's failure must not enter
@@ -714,6 +727,10 @@ export default {
           // ev.data is the verified v2 envelope; ev.properties kept as
           // older-wire tolerance, bare ev as last resort.
           const p = ev?.data ?? ev?.properties ?? ev
+          if (ev?.type === "session.usage.updated") {
+            dispatchUsage(p)
+            continue
+          }
           const failed = ev?.type === "session.execution.failed"
           if (ev?.type !== "session.execution.succeeded" && !failed) continue
           const sid = p?.sessionID
@@ -738,19 +755,245 @@ export default {
           })
           for (const [name, recipe] of Object.entries(recipes)) {
             if (recipe.on !== "bg-done") continue
-            void fireRecipe(name, recipe, { sid, cwd: ledger.get(sid) ?? "" }).catch(() => {})
+            void fireRecipe(name, recipe, { sid, cwd: ledger.get(sid) ?? "" }).catch((e) =>
+              extensionReport(`recipe:${name}`, `bg-done call failed: ${e?.message ?? e}`),
+            )
           }
         }
       } catch (e) {
         if (!bgAbort.signal.aborted) {
-          console.error(`[zsh-companion] event stream ended unexpectedly: ${e?.message ?? e}`)
+          extensionReport("companion", `event stream ended unexpectedly: ${e?.message ?? e}`)
         }
       }
     })()
+
+    void loadExtensions(ctx, dataDir)
 
     return () => {
       watcher.close()
       bgAbort.abort()
     }
   },
+}
+
+// --- extensions -------------------------------------------------------------
+// Feature modules that are ours but do not belong in the user's main
+// ~/.config/opencode/ path load from <config dir>/extensions/. Each exports
+// default { id, setup(ctx, host) } and receives the same plugin ctx plus a
+// host carrying the mechanism they all share, so an extension file holds
+// only policy:
+//   host.report(msg)        queue a problem for user-visible injection —
+//                           plugin stderr never reaches opencode.log, so a
+//                           console.error is a message in a bottle
+//   host.onUsageDelta(cb)   per session.usage.updated, once the companion's
+//                           event loop has turned the cumulative totals into
+//                           a {sid, dInput, dRead} delta
+//   host.storage(name)      JSON kv in the shell data dir, tmp+mv atomic,
+//                           survives restarts (deltas need a baseline; the
+//                           19:56 drop landed in the boot blind spot without)
+//   host.dataDir            the shell data dir the storage lives in
+// Hook registration aggregates across callers, so an extension can still
+// register its own session.hook("context").
+const MINI_AGENT = "zsh-companion"
+const extensionProblems = [] // { name, msg, ts } awaiting delivery
+const extensionReportedAt = new Map() // name\0msg -> ts of last report
+const EXTENSION_REPORT_COOLDOWN_MS = 10 * 60 * 1000
+const usageDeltaListeners = []
+// sid -> {input, read, ts} cumulative at last event. Persisted to disk because
+// mini embeds the server: every hide-and-relaunch is a fresh boot, and the
+// first turn after a relaunch is exactly the one that pays full price for a
+// directory switch — without a seeded baseline that bust is undetectable.
+const usageTotals = new Map()
+const USAGE_BASELINE_FILE = join(shellDataDir(), "usage-baseline.json") // knockout: ignores shell.dataDir override, unlike extensionStorage — same default path unless that key is set
+const USAGE_BASELINE_MAX_AGE_MS = 30 * 60 * 1000 // older than this = cache aged out anyway, re-baseline instead
+const USAGE_BASELINE_CAP = 64
+
+function persistUsageTotals() {
+  try {
+    while (usageTotals.size > USAGE_BASELINE_CAP) {
+      usageTotals.delete(usageTotals.keys().next().value)
+    }
+    const out = {}
+    for (const [sid, t] of usageTotals) {
+      out[sid] = { input: t.input, read: t.read, ts: t.ts }
+    }
+    const tmp = `${USAGE_BASELINE_FILE}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify(out))
+    renameSync(tmp, USAGE_BASELINE_FILE)
+  } catch (e) {
+    extensionReport("companion", `usage baseline persist failed: ${e?.message ?? e}`)
+  }
+}
+
+try {
+  const seeded = JSON.parse(readFileSync(USAGE_BASELINE_FILE, "utf8"))
+  const now = Date.now()
+  for (const [sid, t] of Object.entries(seeded ?? {})) {
+    if (typeof t?.input === "number" && now - (t.ts ?? 0) < USAGE_BASELINE_MAX_AGE_MS) {
+      usageTotals.set(sid, { input: t.input, read: t.read ?? 0, ts: t.ts ?? 0 })
+    }
+  }
+} catch {
+  // no baseline on disk yet: first boot ever, nothing to seed
+}
+
+export function extensionReport(name, msg) {
+  const now = Date.now()
+  const key = `${name}\u0000${msg}`
+  if (now - (extensionReportedAt.get(key) ?? 0) < EXTENSION_REPORT_COOLDOWN_MS) return
+  extensionReportedAt.set(key, now)
+  extensionProblems.push({ name, msg: String(msg), ts: Math.floor(now / 1000) })
+}
+
+export function extensionStorage(dataDir, name) {
+  const file = join(dataDir, `${name}.json`)
+  return {
+    get() {
+      try {
+        return JSON.parse(readFileSync(file, "utf8"))
+      } catch {
+        return {}
+      }
+    },
+    set(obj) {
+      try {
+        const tmp = `${file}.${process.pid}.tmp`
+        writeFileSync(tmp, JSON.stringify(obj))
+        renameSync(tmp, file)
+      } catch {
+        // losing extension state only re-opens its boot blind spot
+      }
+    },
+  }
+}
+
+function dispatchUsage(p) {
+  const sid = p?.sessionID ?? p?.info?.sessionID
+  const tokens = p?.tokens
+  if (!sid || !tokens || typeof tokens.input !== "number") return
+  const read = typeof tokens.cache?.read === "number" ? tokens.cache.read : 0
+  const last = usageTotals.get(sid)
+  usageTotals.set(sid, { input: tokens.input, read, ts: Date.now() })
+  persistUsageTotals()
+  if (!last) return // no baseline anywhere (disk seed missed the age window too): record and wait for the next delta
+  const delta = { sid, dInput: tokens.input - last.input, dRead: read - last.read }
+  for (const cb of usageDeltaListeners) {
+    try {
+      cb(delta)
+    } catch (e) {
+      extensionReport("companion", `usage listener failed: ${e?.message ?? e}`)
+    }
+  }
+}
+
+export async function loadExtensions(ctx, dataDir) {
+  // Extensions live next to config.toml, wherever ZOM_CONFIG points the
+  // config — same rule the zsh installer mirrors on the way in.
+  const dir = join(dirname(configPath()), "extensions")
+  let entries = []
+  try {
+    entries = readdirSync(dir).filter((f) => f.endsWith(".js")).sort()
+  } catch (e) {
+    return // no extensions dir — nothing to load, not an error
+  }
+  ctx.session.hook("context", (event) => {
+    const now = Math.floor(Date.now() / 1000)
+    const pending = []
+    while (extensionProblems.length > 0) {
+      const p = extensionProblems.shift()
+      if (now - p.ts > 60 * 60) continue // an hour-old complaint is noise
+      pending.push(p)
+    }
+    if (pending.length === 0) return
+    // messages, not system: a system part rides the cached prefix and is not
+    // shown to the agent; a tail message is visible and costs only itself.
+    event.messages.push({
+      role: "system",
+      content: [
+        {
+          type: "text",
+          text:
+            "[zom-companion] extension problem — surface this to the user:\n" +
+            pending.map((p) => `- ${p.name}: ${p.msg}`).join("\n"),
+        },
+      ],
+    })
+  })
+  const loaded = []
+  for (const name of entries) {
+    const file = join(dir, name)
+    let id = name.replace(/\.js$/, "")
+    let mod
+    try {
+      // A rewritten file at the same path keeps resolving to the module the
+      // runtime already evaluated — the cache key is the path, and a query
+      // string is not enough under every runtime. Import a private copy so the
+      // running code is always the bytes on disk.
+      const staged = join(tmpdir(), `zom-ext-${process.pid}-${statSync(file).mtimeMs}-${name}`)
+      copyFileSync(file, staged)
+      mod = await import(pathToFileURL(staged).href)
+    } catch (e) {
+      extensionReport(id, `failed to load: ${e?.message ?? e} (${file})`)
+      continue
+    }
+    // The declared id, not the filename, is the extension's identity.
+    if (typeof mod?.default?.id === "string" && mod.default.id) id = mod.default.id
+    loaded.push({ name, id, mod })
+  }
+
+  // One id, one file. Two files claiming one id is an ambiguity we refuse to
+  // resolve by filename order: silently running the older one is how a fix
+  // sits on disk for hours while the bug keeps running.
+  const byId = new Map()
+  for (const item of loaded) byId.set(item.id, [...(byId.get(item.id) ?? []), item])
+  for (const [id, items] of byId) {
+    if (items.length > 1)
+      extensionReport(id, `duplicate extension id — not loading any of: ${items.map((i) => i.name).join(", ")}`)
+  }
+
+  for (const [id, items] of byId) {
+    if (items.length !== 1) continue
+    const mod = items[0].mod
+    const host = {
+      report: (msg) => extensionReport(id, msg),
+      // Attribution at registration: a throwing callback dies alone and the
+      // failure names the extension, not the host's event loop.
+      onUsageDelta: (cb) =>
+        usageDeltaListeners.push((delta) => {
+          try {
+            cb(delta)
+          } catch (e) {
+            extensionReport(id, `usage handler failed: ${e?.message ?? e}`)
+          }
+        }),
+      storage: (key) => extensionStorage(dataDir, key),
+      dataDir,
+    }
+    // A hook the extension registers must not be able to break context
+    // assembly for everyone else: wrap handlers one by one, attribute
+    // failures to the extension, keep the rest of the chain running.
+    const safeCtx = new Proxy(ctx, {
+      get(target, prop) {
+        if (prop !== "session") return target[prop]
+        return new Proxy(target.session, {
+          get(t, p) {
+            if (p !== "hook") return t[p]
+            return (event, handler) =>
+              t.hook(event, (...args) => {
+                try {
+                  return handler(...args)
+                } catch (e) {
+                  extensionReport(id, `${event} hook failed: ${e?.message ?? e}`)
+                }
+              })
+          },
+        })
+      },
+    })
+    try {
+      if (typeof mod?.default?.setup === "function") await mod.default.setup(safeCtx, host)
+    } catch (e) {
+      extensionReport(id, `failed to load: ${e?.message ?? e}`)
+    }
+  }
 }
