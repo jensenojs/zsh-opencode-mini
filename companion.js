@@ -356,7 +356,7 @@ function countTodayFailures(monthPath, cmd) {
 
 export default {
   id: "zom-companion",
-  setup(ctx) {
+  async setup(ctx) {
     // One parse per load (the config feeds contract probes, companion config,
     // dataDir and recipes alike).
     const fullCfg = loadConfig()
@@ -767,7 +767,10 @@ export default {
       }
     })()
 
-    void loadExtensions(ctx, dataDir)
+    // Await registration: hooks added after setup resolves are invisible to
+    // requests already being assembled, and the symptom is a plugin that
+    // silently stops seeing context while `loading plugin` still logs fine.
+    await loadExtensions(ctx, dataDir)
 
     return () => {
       watcher.close()
