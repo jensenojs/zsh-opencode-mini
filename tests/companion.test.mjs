@@ -38,6 +38,33 @@ const bad = (name, why) => { console.log(`  FAIL ${name}: ${why}`); fail++ }
 // config as $XDG_CONFIG_HOME/zsh-opencode-mini/config.jsonc at setup() time,
 // so sandboxes point both at temp trees. Each recipe scenario gets its own
 // sandbox (config is read fresh per setup call).
+// Minimal TOML writer covering what this config uses: scalar tables and nested
+// tables of scalars or arrays.
+const toToml = (value) => {
+  const scalar = (v) => {
+    if (typeof v === "string") return JSON.stringify(v)
+    if (typeof v === "number" || typeof v === "boolean") return String(v)
+    if (Array.isArray(v)) return "[" + v.map(scalar).join(", ") + "]"
+    throw new Error("unsupported TOML value: " + JSON.stringify(v))
+  }
+  const isTable = (v) => v && typeof v === "object" && !Array.isArray(v)
+  const key = (k) => (/^[A-Za-z0-9_-]+$/.test(k) ? k : JSON.stringify(k))
+  const lines = []
+  const walk = (obj, prefix) => {
+    const scalars = []
+    const tables = []
+    for (const [childKey, child] of Object.entries(obj)) (isTable(child) ? tables : scalars).push([childKey, child])
+    for (const [childKey, child] of scalars) lines.push(`${key(childKey)} = ${scalar(child)}`)
+    for (const [childKey, child] of tables) {
+      const name = prefix ? `${prefix}.${key(childKey)}` : key(childKey)
+      lines.push(`[${name}]`)
+      walk(child, name)
+    }
+  }
+  walk(value, "")
+  return lines.join("\n") + "\n"
+}
+
 const rootSandbox = () => {
   const xdgData = mkdtempSync(join(tmpdir(), "zom-comp-"))
   const xdgCfg = mkdtempSync(join(tmpdir(), "zom-cfg-"))
@@ -46,12 +73,26 @@ const rootSandbox = () => {
   const cfgDir = join(xdgCfg, "zsh-opencode-mini")
   mkdirSync(cfgDir, { recursive: true })
   return {
-    xdgData, dataDir, cfgPath: join(cfgDir, "config.jsonc"),
+    xdgData, dataDir, cfgPath: join(cfgDir, "config.toml"),
     use() {
       process.env.XDG_DATA_HOME = xdgData
       process.env.XDG_CONFIG_HOME = xdgCfg
     },
-    write(jsonc) { writeFileSync(this.cfgPath, jsonc) },
+    // Fixtures stay written as JSON objects and are lowered to TOML here, so
+    // each case reads as data rather than as a format exercise.
+    write(config) {
+      // A string that is not JSON is written verbatim: those cases exercise the
+      // "config unparsable" path.
+      if (typeof config === "string") {
+        try {
+          config = JSON.parse(config)
+        } catch {
+          writeFileSync(this.cfgPath, config)
+          return
+        }
+      }
+      writeFileSync(this.cfgPath, toToml(config))
+    },
   }
 }
 const shared = rootSandbox()

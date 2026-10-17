@@ -37,6 +37,7 @@ import {
   writeFileSync,
   renameSync,
 } from "node:fs"
+import { spawnSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -68,29 +69,36 @@ const TRIGGERS = {
 const RECIPE_DELIVER = ["next-session", "outbox"]
 const RECIPE_NAME = /^[a-zA-Z0-9_-]+$/
 
-// Whole-line comments only — same parsing convention as the zsh side.
-// (Deliberately not a full jsonc parser: the config contract forbids "//"
-// inside string values, stated in config.example.jsonc.)
-function parseConfig(text) {
-  return JSON.parse(text.replace(/^[ \t]*\/\/.*$/gm, ""))
-}
+// The config is TOML, parsed by python's tomllib — the same parser the zsh
+// launcher uses, so the two halves can never disagree about the document.
+const TOML_JSON = [
+  "import json, sys, tomllib",
+  "try:",
+  "    with open(sys.argv[1], 'rb') as handle:",
+  "        data = tomllib.load(handle)",
+  "except Exception as exc:",
+  "    sys.stderr.write(str(exc))",
+  "    raise SystemExit(1)",
+  "json.dump(data, sys.stdout)",
+].join("\n")
 
 function configPath() {
   const base = process.env.XDG_CONFIG_HOME || join(homedir(), ".config")
-  return join(base, "zsh-opencode-mini", "config.jsonc")
+  return join(base, "zsh-opencode-mini", "config.toml")
 }
 
 function loadConfig() {
   const p = configPath()
   if (!existsSync(p)) return {}
-  try {
-    return parseConfig(readFileSync(p, "utf8"))
-  } catch (e) {
+  const run = spawnSync("python3", ["-c", TOML_JSON, p], { encoding: "utf8" })
+  if (run.error) throw new Error(`[zsh-companion] failed to run python3 for ${p}: ${run.error.message}`)
+  if (run.status !== 0) {
     throw new Error(
-      `[zsh-companion] failed to parse ${p}: ${e.message}. ` +
+      `[zsh-companion] failed to parse ${p}: ${(run.stderr || "").trim()}. ` +
         `Fix the file or remove it to run on defaults.`,
     )
   }
+  return JSON.parse(run.stdout)
 }
 
 function shellDataDir(cfg) {

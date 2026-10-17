@@ -34,6 +34,9 @@ case "$1" in
       if [[ "${ZOM_MOCK_HELP_MISSING:-}" != *--prefill* ]]; then
         print -r -- "  --prefill string          Seed the composer with text without sending it"
       fi
+      if [[ "${ZOM_MOCK_HELP_MISSING:-}" != *--leader* ]]; then
+        print -r -- "  --leader string           Leader key for mini keybindings"
+      fi
       exit 0
     fi
     print -r -- "[mock mini TUI]"

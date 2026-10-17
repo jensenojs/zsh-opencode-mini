@@ -66,7 +66,7 @@ recipe 的结果要回到用户眼前。它不能走 zsh 侧的 stdout——open
 
 ## recipe 管线：策略全部住在 opencode 侧
 
-recipe 是这个插件里唯一「主动做事」的机制：shell 发生某类事件时，用某个模型跑一段 prompt，把结果送回 shell。它的所有策略逻辑——触发条件、退出码过滤、限频、模型选择、投递方式——都写在 opencode 侧的配置里（`config.example.jsonc:24-57`），zsh 侧一行策略代码都没有。
+recipe 是这个插件里唯一「主动做事」的机制：shell 发生某类事件时，用某个模型跑一段 prompt，把结果送回 shell。它的所有策略逻辑——触发条件、退出码过滤、限频、模型选择、投递方式——都写在 opencode 侧的配置里（`config.example.toml:24-57`），zsh 侧一行策略代码都没有。
 
 为什么这样切分？看两边的运行环境。zsh 侧的纪律是每条命令只付得起一两个外部进程（见上一节），策略逻辑（限频计数器、状态机）在 shell 里既写不起也测不起。opencode 侧是常驻 Node 进程，有 storage（持久计数器）、有 event 流、有 generate API，策略逻辑放这里是顺路的。所以切分原则是：**zsh 侧只产生信号，信号的解释和消费全部在 opencode 侧**。加一个 recipe 不需要碰任何 zsh 代码。
 
@@ -109,7 +109,7 @@ zom_recipe_<name> 工具(agent 调用)───┘         │
 
 ## 动手：从零写一个 recipe
 
-在 `~/.config/zsh-opencode-mini/config.jsonc` 的 `recipes` 段加一个条目。逐个字段讲：
+在 `~/.config/zsh-opencode-mini/config.toml` 的 `recipes` 段加一个条目。逐个字段讲：
 
 ```jsonc
 "recipes": {

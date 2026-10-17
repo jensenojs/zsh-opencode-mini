@@ -21,7 +21,7 @@ never touches the prompt. Uninstall = delete the source line.
 ## Architecture: two hook surfaces, one config file
 
 ```text
-  config: ~/.config/zsh-opencode-mini/config.jsonc
+  config: ~/.config/zsh-opencode-mini/config.toml
           "shell" section -> plugin.zsh (jq)   |   "companion"+"recipes" sections -> zom-companion.js
 
 ┌─ zsh side (plugin.zsh) ─────────────┐     ┌─ opencode side (zom-companion.js) ──┐
@@ -101,7 +101,7 @@ model, and delivers the result:
 Failures are visible: an invalid recipe field is a loud load-time error, a
 model-call failure lands in the outbox as a `recipe-error` line, and the
 per-hour cap is a hard gate. A worked example (`failure-hint`) ships in
-[`config.example.jsonc`](config.example.jsonc).
+[`config.example.toml`](config.example.toml).
 
 ### Awareness: noticing what the user cannot see
 
@@ -133,8 +133,8 @@ argument is a different command.
 
 ### Configuration system
 
-One source of truth: **`~/.config/zsh-opencode-mini/config.jsonc`** (see
-[`config.example.jsonc`](config.example.jsonc)). Copy it there to customize;
+One source of truth: **`~/.config/zsh-opencode-mini/config.toml`** (see
+[`config.example.toml`](config.example.toml)). Copy it there to customize;
 without it everything runs on defaults — the plugin works with zero
 configuration.
 
@@ -198,7 +198,7 @@ real signal appears — not before.
 zsh-opencode-mini/
 ├── README.md                       # this file (source of truth)
 ├── README.zh-CN.md                 # Chinese translation (follows English)
-├── config.example.jsonc            # annotated config template (copy to ~/.config/zsh-opencode-mini/)
+├── config.example.toml            # annotated config template (copy to ~/.config/zsh-opencode-mini/)
 ├── zsh-opencode-mini.plugin.zsh    # zsh side: record + signal + OSC + outbox drain + zom-bg + launcher
 ├── agent/
 │   └── zsh-companion.md            # opencode agent: behavior rules only

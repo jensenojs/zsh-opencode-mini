@@ -10,13 +10,28 @@
 # (data path, summon keybind). Strategy knobs live on the opencode side, in
 # the jsonc config read by opencode-plugin/zom-companion.js — see README.md.
 
-# ---- Configuration: one jsonc file, two consumers ----
-# ~/.config/zsh-opencode-mini/config.jsonc — its "shell" section is read here
-# (jq, after stripping whole-line comments), its "companion" and "recipes"
-# sections are read by opencode-plugin/zom-companion.js. There is no env-var
-# configuration surface. Missing file / missing keys -> defaults; the plugin
-# works with zero configuration.
-ZOM_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/zsh-opencode-mini/config.jsonc"
+# ---- Configuration: one TOML file, two consumers ----
+# ~/.config/zsh-opencode-mini/config.toml — its "shell" section is read here,
+# its "companion" and "recipes" sections by opencode-plugin/zom-companion.js.
+# Both sides parse the same document with python's tomllib, so there is exactly
+# one parser and no JSON shim to drift. There is no env-var configuration
+# surface. Missing file / missing keys -> defaults; the plugin works with zero
+# configuration.
+ZOM_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/zsh-opencode-mini/config.toml"
+
+# Normalized JSON view of the TOML document. Empty output + non-zero status
+# means "absent or unparsable", which every caller treats as "use defaults".
+__zom_config_json() {
+  [[ -f "$ZOM_CONFIG" ]] || return 1
+  python3 - "$ZOM_CONFIG" <<'PYTOML'
+import json, sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as handle:
+        json.dump(tomllib.load(handle), sys.stdout)
+except Exception:
+    raise SystemExit(1)
+PYTOML
+}
 
 # The document is parsed exactly once, at source time: one jq emits every
 # shell-side raw value into ZOM_CFG (@sh does the quoting, so values with
@@ -44,6 +59,7 @@ __zom_cfg_load() {
     ZOM_CFG[stderrCapture]=""
     ZOM_CFG[failurePrefill]=""
     ZOM_CFG[model]=""
+    ZOM_CFG[leader]=""
     ZOM_CFG[failureTtlSeconds]=""
     ZOM_CFG[recentDefaultN]=""'
   # One document, one jq: emit all assignments. `// ""` maps jq's falsy
@@ -65,12 +81,13 @@ __zom_cfg_load() {
     "ZOM_CFG[stderrCapture]="     + (($s.stderrCapture  // "") | @sh),
     "ZOM_CFG[failurePrefill]="    + (($s.failurePrefill // "") | @sh),
     "ZOM_CFG[model]="             + (($s.model          // "") | @sh),
+    "ZOM_CFG[leader]="            + (($s.leader         // "") | @sh),
     "ZOM_CFG[failureTtlSeconds]=" + ((.companion.failureTtlSeconds // "") | @sh),
     "ZOM_CFG[recentDefaultN]="    + ((.companion.recentDefaultN    // "") | @sh)'
   local assignments
   if [[ ! -f "$ZOM_CONFIG" ]]; then
     eval "$empty"
-  elif assignments=$(sed 's|^[[:space:]]*//.*||' "$ZOM_CONFIG" | jq -re "$q" 2>/dev/null); then
+  elif assignments=$(__zom_config_json | jq -re "$q" 2>/dev/null); then
     ZOM_CFG_STATUS=ok
     eval "$assignments"
   else
@@ -100,6 +117,7 @@ typeset -gA ZOM_DEFAULTS=(
   [stderrCapture]="on"
   [failurePrefill]=$'上一条命令失败了（exit {exit}）：{cmd}\n帮我分析失败原因并给出修复建议'
   [model]=""
+  [leader]="ctrl+g"
   [failureTtlSeconds]="600"
   [recentDefaultN]="20"
 )
@@ -818,7 +836,7 @@ __zom_mini_probe() {
   fi
   local -a missing=()
   local f
-  for f in --agent --replay-limit --no-replay --prefill; do
+  for f in --agent --replay-limit --no-replay --prefill --leader; do
     if [[ "$help" != *"$f"* ]]; then
       missing+=("$f")
     fi
@@ -844,6 +862,10 @@ __zom_mini_argv() {
     esac
   fi
   ZOM_ARGV+=(--agent "$ZOM_AGENT")
+  # The leader is a mini-side knob: the main TUI keeps cli.json's leader, and
+  # mini gets its own because its dismiss key owns ctrl+x.
+  local leader=${ZOM_CFG[leader]:-${ZOM_DEFAULTS[leader]}}
+  [[ -n "$leader" ]] && ZOM_ARGV+=(--leader "$leader")
   if [[ -n "${ZOM_CFG[model]}" ]]; then
     ZOM_ARGV+=(-m "${ZOM_CFG[model]}")   # no variant-only flag: variant rides on -m
   fi
@@ -1113,7 +1135,6 @@ __zom_cfg_line() {
 }
 zom-config() {
   emulate -L zsh
-  local strip='s|^[[:space:]]*//.*||'
   print -r -- "zsh-opencode-mini — configuration report (the plugin never writes config)"
   case "$ZOM_CFG_STATUS" in
     ok)         print -r -- "config: $ZOM_CONFIG" ;;
@@ -1135,19 +1156,20 @@ zom-config() {
   __zom_cfg_line stderrCapture  "$ZOM_STDERR_CAPTURE"
   __zom_cfg_line failurePrefill "$ZOM_FAILURE_PREFILL_TMPL"
   __zom_cfg_line model          "${ZOM_CFG[model]}"
+  __zom_cfg_line leader         "${ZOM_CFG[leader]:-${ZOM_DEFAULTS[leader]}}"
   print -r -- "companion (read by the opencode-side plugin, per session):"
   __zom_cfg_line failureTtlSeconds "$ZOM_FAILURE_TTL"
   __zom_cfg_line recentDefaultN    "${ZOM_CFG[recentDefaultN]:-${ZOM_DEFAULTS[recentDefaultN]}}"
   print -r -- "recipes (top-level \"recipes\"; the name becomes the tool name and the [zom:<name>] tag):"
   local names name rjson origin
-  names=$( [[ -f "$ZOM_CONFIG" ]] && sed "$strip" "$ZOM_CONFIG" | jq -r '.recipes // {} | keys[]' 2>/dev/null )
+  names=$( __zom_config_json | jq -r '.recipes // {} | keys[]' 2>/dev/null )
   if [[ -z "$names" ]]; then
     print -r -- "  (none defined)"
   else
     for name in ${(f)names}; do
       origin="ok"
       [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || origin="INVALID — name must match ^[A-Za-z0-9_-]+$"
-      rjson=$( [[ -f "$ZOM_CONFIG" ]] && sed "$strip" "$ZOM_CONFIG" | jq -c --arg n "$name" '.recipes[$n] | {on: (.on // "?"), model: (.model // "?")}' 2>/dev/null )
+      rjson=$( __zom_config_json | jq -c --arg n "$name" '.recipes[$n] | {on: (.on // "?"), model: (.model // "?")}' 2>/dev/null )
       printf '  %-18s %s  %s\n' "$name" "$origin" "$rjson"
     done
   fi

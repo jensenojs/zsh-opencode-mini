@@ -79,8 +79,8 @@ prompt (you review, then enter). The AI can also pull history itself via the
 
 ## Configuration
 
-Optional. Copy [`config.example.jsonc`](config.example.jsonc) to
-`~/.config/zsh-opencode-mini/config.jsonc`; defaults work with no file.
+Optional. Copy [`config.example.toml`](config.example.toml) to
+`~/.config/zsh-opencode-mini/config.toml`; defaults work with no file.
 
 | Key | Default | Meaning |
 |---|---|---|

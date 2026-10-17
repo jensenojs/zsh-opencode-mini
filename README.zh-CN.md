@@ -73,8 +73,8 @@ antidote：把 `jensenojs/zsh-opencode-mini` 加进插件清单文件。
 
 ## 配置
 
-可选。把 [`config.example.jsonc`](config.example.jsonc) 复制到
-`~/.config/zsh-opencode-mini/config.jsonc`；没有配置文件时全部走默认值。
+可选。把 [`config.example.toml`](config.example.toml) 复制到
+`~/.config/zsh-opencode-mini/config.toml`；没有配置文件时全部走默认值。
 
 | 键 | 默认 | 说明 |
 |---|---|---|

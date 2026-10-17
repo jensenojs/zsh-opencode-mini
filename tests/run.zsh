@@ -7,7 +7,7 @@
 #
 # Sandbox model: every scenario runs the plugin in a pristine `zsh -f` with
 # HOME / XDG_CONFIG_HOME / XDG_DATA_HOME pointed at a fresh temp dir, so the
-# plugin's config discovery (config.jsonc) and data store land inside the
+# plugin's config discovery (config.toml) and data store land inside the
 # sandbox — exactly the paths a real user's setup would use.
 #
 # Scenario inventory (what is covered, and what is deliberately not):
@@ -25,7 +25,7 @@
 #   Launcher (mock opencode-zom in tests/bin):
 #     S6  zom: mock receives `mini -c --agent zsh-companion`
 #     S7  zom-last: prompt contains the recorded failing command
-#   Configuration (config.jsonc, the single config file):
+#   Configuration (config.toml, the single config file):
 #     S8  keybind: default ^X bound; keybind:"" in config suppresses it
 #     S9  dataDir: config-provided dataDir is honored (incl. ~ expansion)
 #   opencode-side plugin (companion.js, driven via node if available):
@@ -91,6 +91,9 @@ assert_file_missing() { [[ ! -f "$1" ]] && ok "$2" || bad "$2" "file unexpectedl
 # fresh sandbox per scenario: HOME + XDG dirs inside a temp tree
 sandbox() {
   TD=$(mktemp -d)
+  # The plugin's own exports must not leak in from whoever runs the suite:
+  # they are what S6 asserts against.
+  unset ZOM_PASSTHROUGH_FILE ZOM_PASSTHROUGH_KEYS
   export HOME="$TD/home"
   export XDG_CONFIG_HOME="$TD/home/.config"
   export XDG_DATA_HOME="$TD/home/.local/share"
@@ -100,8 +103,63 @@ sandbox() {
 }
 cleanup() { [[ -n "$TD" ]] && mv "$TD" /tmp/zom-suite-scratch-$$ 2>/dev/null; TD= }
 
-# write a config.jsonc into the sandbox
-write_config() { mkdir -p "$XDG_CONFIG_HOME/zsh-opencode-mini"; cat > "$XDG_CONFIG_HOME/zsh-opencode-mini/config.jsonc"; }
+# write a config.toml into the sandbox
+# Fixtures are written as JSON (compact inline, easy to read) and lowered to
+# TOML here, so the tests exercise the real parser without hand-writing 25 TOML
+# blocks. Input that is not JSON is written verbatim — that is how the
+# unparsable-config case is exercised.
+# JSON fixtures -> TOML (verbatim passthrough when the input is not JSON, so
+# the unparsable-config case still exercises the real failure path).
+json_to_toml() {
+  python3 - "$1" <<'PYJSON'
+import json, sys
+raw = sys.argv[1]
+try:
+    data = json.loads(raw)
+except Exception:
+    sys.stdout.write(raw)
+    raise SystemExit(0)
+
+def scalar(value):
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(scalar(item) for item in value) + "]"
+    raise TypeError(value)
+
+def key(name):
+    return name if all(ch.isalnum() or ch in "_-" for ch in name) else json.dumps(name)
+
+lines = []
+
+def walk(obj, prefix):
+    scalars, tables = [], []
+    for child, value in obj.items():
+        if value is None:
+            continue
+        (tables if isinstance(value, dict) else scalars).append((child, value))
+    for child, value in scalars:
+        lines.append(f"{key(child)} = {scalar(value)}")
+    for child, value in tables:
+        name = f"{prefix}.{key(child)}" if prefix else key(child)
+        lines.append(f"[{name}]")
+        walk(value, name)
+
+walk(data, "")
+sys.stdout.write("\n".join(lines) + "\n")
+PYJSON
+}
+
+write_config() {
+  mkdir -p "$XDG_CONFIG_HOME/zsh-opencode-mini"
+  local payload
+  payload=$(cat)
+  json_to_toml "$payload" > "$XDG_CONFIG_HOME/zsh-opencode-mini/config.toml"
+}
 
 # source the plugin in a pristine zsh, run a body, capture stdout.
 # NOTE: runs with the mock opencode first on PATH.
@@ -194,7 +252,7 @@ t_S6_zom_launch() {
   run_zsh 'zom extra-arg' >/dev/null 2>&1
   local log
   log=$(cat "$ZOM_MOCK_LOG")
-  assert_contains "S6 default resume=main pins session" "$log" "argv=mini -s ses_zom-main --replay-limit 50 --agent zsh-companion extra-arg"
+  assert_contains "S6 default resume=main pins session" "$log" "argv=mini -s ses_zom-main --replay-limit 50 --agent zsh-companion --leader ctrl+g extra-arg"
   cleanup
   sandbox
   write_config <<'EOF'
@@ -202,7 +260,7 @@ t_S6_zom_launch() {
 EOF
   run_zsh 'zom extra-arg' >/dev/null 2>&1
   log=$(cat "$ZOM_MOCK_LOG")
-  assert_contains "S6 resume=off starts fresh" "$log" "argv=mini --agent zsh-companion extra-arg"
+  assert_contains "S6 resume=off starts fresh" "$log" "argv=mini --agent zsh-companion --leader ctrl+g extra-arg"
   cleanup
   sandbox
   write_config <<'EOF'
@@ -210,7 +268,7 @@ EOF
 EOF
   run_zsh 'zom extra-arg' >/dev/null 2>&1
   log=$(cat "$ZOM_MOCK_LOG")
-  assert_contains "S6 replay=off passes --no-replay" "$log" "argv=mini -s ses_zom-main --no-replay --agent zsh-companion extra-arg"
+  assert_contains "S6 replay=off passes --no-replay" "$log" "argv=mini -s ses_zom-main --no-replay --agent zsh-companion --leader ctrl+g extra-arg"
   cleanup
   sandbox
   write_config <<'EOF'
@@ -218,7 +276,7 @@ EOF
 EOF
   run_zsh 'zom extra-arg' >/dev/null 2>&1
   log=$(cat "$ZOM_MOCK_LOG")
-  assert_contains "S6 replayLimit honoured" "$log" "argv=mini -s ses_zom-main --replay-limit 7 --agent zsh-companion extra-arg"
+  assert_contains "S6 replayLimit honoured" "$log" "argv=mini -s ses_zom-main --replay-limit 7 --agent zsh-companion --leader ctrl+g extra-arg"
   cleanup
   sandbox
   run_command 'git push --force' 'false'   # record a fresh failure
@@ -363,11 +421,11 @@ t_S12_err_return_survival() {
 }
 
 t_S13_broken_config() {
-  # a syntax-broken config.jsonc must produce one loud warning and fall back
+  # a syntax-broken config.toml must produce one loud warning and fall back
   # to defaults (keybind ^X bound, default dataDir), not silently mis-parse
   sandbox
   mkdir -p "$XDG_CONFIG_HOME/zsh-opencode-mini"
-  print '{ broken jsonc !!!' > "$XDG_CONFIG_HOME/zsh-opencode-mini/config.jsonc"
+  print '{ broken jsonc !!!' > "$XDG_CONFIG_HOME/zsh-opencode-mini/config.toml"
   local out
   out=$(PATH="$MOCKBIN:$PATH" zsh -f -c "source '$PLUGIN' 2>&1; bindkey '^X'" 2>&1)
   assert_contains "S13 unparsable warning" "$out" "config unparsable, using defaults"
@@ -545,7 +603,7 @@ t_S19_agent_md_frontmatter() {
   for k in ${(f)keys}; do
     case "$k" in
       description|mode|hidden) ok "S19 frontmatter key allowed: $k" ;;
-      *) bad "S19 frontmatter key allowed: $k" "unexpected key — move behavior into the body or config.jsonc" ;;
+      *) bad "S19 frontmatter key allowed: $k" "unexpected key — move behavior into the body or config.toml" ;;
     esac
   done
 }
@@ -626,7 +684,7 @@ t_S23_sequence_conflict() {
   # has no precmd), which is the same function and the same state.
   local setup="bindkey -e; KEYTIMEOUT=100; bindkey '^Xs' history-incremental-search-forward; bindkey '^X^U' undo"
   local H out
-  local mk() { H=$(mktemp -d); mkdir -p "$H/.config/zsh-opencode-mini"; printf '%s' "$1" > "$H/.config/zsh-opencode-mini/config.jsonc"; }
+  local mk() { H=$(mktemp -d); mkdir -p "$H/.config/zsh-opencode-mini"; json_to_toml "$1" > "$H/.config/zsh-opencode-mini/config.toml"; }
 
   mk '{"shell":{"keybindConflict":"notify"}}'
   out=$(HOME="$H" XDG_CONFIG_HOME="$H/.config" zsh -f -c "$setup; source '$PLUGIN'; __zom_keybind_conflict" 2>&1)
@@ -937,7 +995,7 @@ EOF
   # success still flushes the signal (existing behaviour, no regression)
   run_command 'ok-cmd' 'true'
   assert_file_missing "$f" "S35 success flushes signal"
-  rm -f "$XDG_CONFIG_HOME/zsh-opencode-mini/config.jsonc"   # back to defaults: rotation needs capture on
+  rm -f "$XDG_CONFIG_HOME/zsh-opencode-mini/config.toml"   # back to defaults: rotation needs capture on
   # rotation: the over-cap log is truncated back under the cap by the next
   # precmd — only in tee mode (a channel-less shell must not trim a sibling's
   # live log), so this cell runs with a TTY that resolves tee
@@ -1024,7 +1082,7 @@ EOF
   mode=$(PATH="$TD/bin:$PATH" WEZTERM_PANE=7 run_src_tty "$TD/fake-tty" 'print -r -- "$ZOM_STDERR_MODE"')
   assert_eq "S37 capture off resolves empty" "$mode" ""
   rm -f "$DD/stderr-tail.log"   # the tee cells above really do install tee; drop their side effect
-  rm -f "$XDG_CONFIG_HOME/zsh-opencode-mini/config.jsonc"
+  rm -f "$XDG_CONFIG_HOME/zsh-opencode-mini/config.toml"
   # scrollback failure: stderr comes from the pane text, fd 2 never touched
   # (no tee install -> no stderr-tail.log), pane + tty stamped on the record
   PATH="$TD/bin:$PATH" WEZTERM_PANE=7 run_zsh "__zom_preexec 'pane-fail'; false; __zom_precmd"
