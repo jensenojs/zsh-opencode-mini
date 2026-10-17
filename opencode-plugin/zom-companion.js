@@ -173,10 +173,16 @@ const CONTRACT = {
   ],
 }
 
+// The zom fork stamps its own builds as 0.0.0-zom-<build>, so the semver
+// major carries no information about the plugin API generation. Treat that
+// channel as V2 and let the surface probes below be the real gate — a
+// breaking upstream change still trips them.
+const CHANNEL_BUILD = /^0\.0\.0-zom(?:-|$)/
+
 function assertContract(ctx, extraSurfaces = []) {
   const version = String(ctx?.app?.version ?? "")
   const major = Number(version.split(".")[0])
-  if (major !== CONTRACT.major) {
+  if (major !== CONTRACT.major && !CHANNEL_BUILD.test(version)) {
     throw new Error(
       `[zsh-companion] plugin API mismatch: built for V${CONTRACT.major}, ` +
         `running on OpenCode ${version || "<version unreadable>"}. ` +

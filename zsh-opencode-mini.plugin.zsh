@@ -1194,3 +1194,28 @@ if [[ -d "$ZOM_DATA_DIR" ]]; then
   done
   unset _ZOM_F
 fi
+
+# ---- opencode-side parts ----
+# The zsh half is this file; the AI half is two separate artifacts (the
+# companion plugin and the agent definition). Plugin managers only source
+# this file, so "install the plugin" used to still leave the AI side blind
+# until someone ran the two ln -sf lines from the README. Create them here
+# instead: one stat per part per shell, and never touch an existing file or
+# symlink (a user may point it at a working checkout).
+__zom_link_opencode_parts() {
+  local src_dir="${${(%):-%x}:A:h}"
+  local -a parts=(
+    "opencode-plugin/zom-companion.js:$HOME/.config/opencode/plugins/zom-companion.js"
+    "agent/zsh-companion.md:$HOME/.config/opencode/agent/zsh-companion.md"
+  )
+  local part src dst
+  for part in $parts; do
+    src="$src_dir/${part%%:*}"
+    dst="${part#*:}"
+    [[ -e "$dst" || -L "$dst" ]] && continue
+    [[ -f "$src" ]] || continue
+    mkdir -p "${dst:h}" 2>/dev/null || continue
+    ln -s "$src" "$dst" 2>/dev/null
+  done
+}
+__zom_link_opencode_parts
