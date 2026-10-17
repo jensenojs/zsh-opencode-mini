@@ -56,6 +56,23 @@ antidote：把 `jensenojs/zsh-opencode-mini` 加进插件清单文件。
 
 ## 使用
 
+### 完整 TUI 当调试视图
+
+mini 只是提示符之间的一层薄渲染，会话本身住在服务端；同一个 channel 的客户端
+读同一个会话库（`~/.local/share/opencode/opencode-<channel>.db`）。因此想看清
+mini 里看不见的东西——思考过程、工具调用参数、MCP 连接、上下文用量——在另一个
+pane 里用同一个二进制打开这个会话就够了：
+
+```bash
+opencode-zom -s ses_zom-main     # 或 opencode-zom 后从会话列表里选
+```
+
+两边共享历史，mini 里的键盘仍归 zsh。同一个会话别在两处同时发消息，先后顺序
+由服务端定。
+
+`opencode-zom mini` 和 `opencode-zom`（完整 TUI）必须来自同一次构建：构建时的
+channel 决定库文件名，换了 channel 等于换了空库，历史看起来「消失」了。
+
 | 按键 / 命令 | 作用 |
 |---|---|
 | `C-x` | 打开/关闭 AI mini 会话（`ses_zom-main`，配自建二进制可感知目录） |

@@ -200,8 +200,7 @@ zsh-opencode-mini/
 ├── README.zh-CN.md                 # Chinese translation (follows English)
 ├── config.example.toml            # annotated config template (copy to ~/.config/zsh-opencode-mini/)
 ├── zsh-opencode-mini.plugin.zsh    # zsh side: record + signal + OSC + outbox drain + zom-bg + launcher
-├── agent/
-│   └── zsh-companion.md            # opencode agent: behavior rules only
+├── agent.example.md                # agent prompt template, seeded to <config>/agent.md
 ├── companion.js                      # opencode side: contract check + zom_context + context hook + recipes + outbox + extension host
 ├── extensions/                       # policy modules loaded by companion.js (cache-watch, state-watch)
 └── tests/
@@ -324,6 +323,13 @@ is printed once (the `zom` function still works) — rebind via
   plugin suggestions, not your words)
 - in any opencode session with this plugin: ask the agent `zom_context`
   things — "why did that fail", "what did I run earlier today"
+- the same session is reachable from the full TUI on purpose: mini is a thin
+  renderer and every piece of session truth lives on the server, so
+  `opencode-zom -s ses_zom-main` in another pane is the debug view of the
+  exact conversation you were having between prompts (thinking, tool
+  arguments, MCP connections, context usage). Both clients have to come from
+  the same build: the channel decides the database filename, and a different
+  channel means a different, empty database
 
 ## OSC frame format (reserved for wezterm fork, hole 1)
 

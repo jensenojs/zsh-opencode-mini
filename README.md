@@ -62,6 +62,25 @@ Requires: `opencode` (latest v2), `jq`, `base64`.
 
 ## Usage
 
+### The full TUI as a debug view
+
+mini is a thin renderer between prompts; the session itself lives on the
+server, and clients on the same channel read the same database
+(`~/.local/share/opencode/opencode-<channel>.db`). To see what mini cannot
+show — thinking, tool arguments, MCP connections, context usage — open that
+session with the same binary in another pane:
+
+```bash
+opencode-zom -s ses_zom-main     # or opencode-zom and pick it from the list
+```
+
+Both share the history and mini keeps the keyboard inside zsh. Do not send
+from both places at once; the server decides which message lands first.
+
+`opencode-zom mini` and the full `opencode-zom` must come from the same build:
+the channel picked at build time names the database file, and a different
+channel is a different, empty database — history appears to vanish.
+
 | Key / command | What it does |
 |---|---|
 | `C-x` | open/close the AI mini session (`ses_zom-main`, cwd-aware with the companion binary) |
