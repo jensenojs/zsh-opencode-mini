@@ -39,7 +39,7 @@ never touches the prompt. Uninstall = delete the source line.
 │   hint line before next prompt)     │     │  the plugin→shell return channel    │
 │                                     │     │                                     │
 │  C-x ─► opencode mini ─────────────────────► inject ONE line; else silence     │
-│           --agent zsh-companion ──────────► agent/zsh-companion.md (behavior)  │
+│           --agent zsh-companion ──────────► registered by companion.js         │
 └─────────────────────────────────────┘     └─────────────────────────────────────┘
 ```
 
@@ -223,12 +223,12 @@ Runtime data (separate from code):
 
 ## Install
 
-Two ecosystems. The **opencode-side assets** (agent definition, companion
-plugin, extensions) need no manual steps: on shell load the plugin copies
-them into place — `companion.js` to `~/.config/opencode/plugins/`, the agent
-prompt to `~/.config/opencode/agent/`, `extensions/` mirrored into
-`~/.config/zsh-opencode-mini/extensions/` (`XDG_CONFIG_HOME` honored), each
-refreshed when it differs. The **zsh side** is one rc line (recording,
+Two ecosystems. The **opencode-side assets** need no manual steps: on shell
+load the plugin copies `companion.js` to `~/.config/opencode/plugins/` and
+mirrors `extensions/` into `~/.config/zsh-opencode-mini/extensions/`
+(`XDG_CONFIG_HOME` honored), refreshed when they differ. The agent is not a
+host file: `companion.js` registers it at load and reads its prompt from
+`~/.config/zsh-opencode-mini/agent.md`, seeded once from `agent.example.md`. The **zsh side** is one rc line (recording,
 keybind, outbox consumer, launcher). Skipping the rc line leaves the zsh
 plugin uninstalled; once it loads, the AI side comes with it.
 
@@ -279,9 +279,8 @@ Remove the three things install created, in any order:
 # 1. the zsh side: your manager's entry, or the zshrc.d line
 rm ~/.config/zsh/zshrc.d/35-zsh-opencode-mini.zsh
 
-# 2. the opencode side: plugin + agent links
+# 2. the opencode side: the one plugin file
 rm ~/.config/opencode/plugins/zom-companion.js
-rm ~/.config/opencode/agent/zsh-companion.md
 
 # 3. optional: recorded data (history, failure signal, outbox, bg ledger)
 rm -rf ~/.local/share/zsh-opencode-mini ~/.config/zsh-opencode-mini

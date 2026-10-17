@@ -22,9 +22,9 @@
 // anchored by assertContract's version check.
 
 import { execSync } from "node:child_process"
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, existsSync } from "node:fs"
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, existsSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, dirname } from "node:path"
 
 const plugin = (await import("../companion.js")).default
 
@@ -148,6 +148,7 @@ function makeCtx({ version = "2.0.21", omit = [] } = {}) {
     systemPushes: [],
     generateCalls: [],
     storage: {},
+    agents: {},
     outboxFeeds: [],
     signals: [],
   }
@@ -167,6 +168,20 @@ function makeCtx({ version = "2.0.21", omit = [] } = {}) {
       ? {
           get: async (k) => state.storage[k],
           set: async (k, v) => { state.storage[k] = v },
+        }
+      : undefined,
+    agent: has("agent")
+      ? {
+          transform(cb) {
+            cb({
+              get: (id) => state.agents[id],
+              update: (id, fn) => {
+                const item = state.agents[id] ?? { id }
+                state.agents[id] = item
+                fn(item)
+              },
+            })
+          },
         }
       : undefined,
     generate: has("generate")
@@ -210,6 +225,23 @@ try {
     ? ok("context hook registered")
     : bad("context hook registered", `hooks=${state.contextHooks.length}`)
   ok("tool registered")
+
+  // 1b. the agent is seeded by the plugin, not by a markdown file in the host
+  // config dir; personal taste is appended from the plugin's own config dir.
+  const seeded = state.agents["zsh-companion"]
+  seeded && seeded.mode === "primary" && seeded.hidden === true &&
+  seeded.system.includes("You run inside the user's terminal")
+    ? ok("agent seeded at load")
+    : bad("agent seeded at load", JSON.stringify(seeded))
+
+  const promptFile = join(dirname(shared.cfgPath), "agent.md")
+  writeFileSync(promptFile, "Prefer tilth over grep.\n")
+  const reloaded = makeCtx()
+  await plugin.setup(reloaded.ctx)
+  reloaded.state.agents["zsh-companion"].system === "Prefer tilth over grep.\n"
+    ? ok("agent.md is the prompt")
+    : bad("agent.md is the prompt", JSON.stringify(reloaded.state.agents["zsh-companion"].system))
+  rmSync(promptFile, { force: true })
 
   // 2. fresh failure -> injected
   signal(now - 30)

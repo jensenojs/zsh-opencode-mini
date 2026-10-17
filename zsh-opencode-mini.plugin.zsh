@@ -322,7 +322,7 @@ __zom_is_uint() {
 }
 
 # ---- Internal defaults (not configuration; edit the source if you must) ----
-(( $+ZOM_AGENT )) || typeset -gr ZOM_AGENT="zsh-companion"   # agent name, defined in agent/zsh-companion.md
+(( $+ZOM_AGENT )) || typeset -gr ZOM_AGENT="zsh-companion"   # agent name, seeded by companion.js at load
 (( $+ZOM_MAIN_SESSION )) || typeset -gr ZOM_MAIN_SESSION="ses_zom-main"  # the dedicated assistant session ("resume": "main")
 # Replay behaviour when resuming the main session (v2.0.21 mini source:
 # opening prints the newest N messages into the terminal scrollback, N
@@ -1316,7 +1316,7 @@ zom-config() {
   fi
   print -r -- "opencode-side parts:"
   local part resolved fm
-  for part in "$HOME/.config/opencode/plugins/zom-companion.js" "$HOME/.config/opencode/agent/zsh-companion.md"; do
+  for part in "$HOME/.config/opencode/plugins/zom-companion.js"; do
     if [[ -L "$part" ]]; then
       resolved=$(readlink "$part")
       print -r -- "  $part"
@@ -1368,12 +1368,15 @@ __zom_install_opencode_parts() {
   local src_dir="${${(%):-%x}:A:h}"
   local -a parts=(
     "companion.js:$cfg_base/opencode/plugins/zom-companion.js"
-    "agent/zsh-companion.md:$cfg_base/opencode/agent/zsh-companion.md"
   )
   # Extensions live next to config.toml — the same seam ZOM_CONFIG splits,
   # and the same directory companion.js scans on the way out.
   local cfg_dir="${${ZOM_CONFIG:-$cfg_base/zsh-opencode-mini/config.toml}:h}"
   local ext_dst="$cfg_dir/extensions"
+  # The agent prompt is the user's file; the repo only supplies the seed.
+  [[ -d "$cfg_dir" ]] || mkdir -p "$cfg_dir" 2>/dev/null
+  [[ -f "$cfg_dir/agent.md" ]] ||
+    cp -f "$src_dir/agent.example.md" "$cfg_dir/agent.md" 2>/dev/null || true
   local part src dst f
   for f in "$src_dir"/extensions/*.js(N); do
     parts+=("extensions/${f:t}:$ext_dst/${f:t}")
@@ -1390,21 +1393,5 @@ __zom_install_opencode_parts() {
     mkdir -p "${dst:h}" 2>/dev/null || continue
     cp -f "$src" "$dst" 2>/dev/null
   done
-  # The shipped agent prompt is product copy — generic, nobody's taste. Taste
-  # belongs in the plugin's own config dir: <cfg_dir>/agent.md is appended to
-  # the base at install, so personal edits survive upgrades and never leak into
-  # the repo. Composition (not a second agent file) because opencode discovers
-  # agents by scanning agent/ under its config roots; there is no runtime hook
-  # to register one, so one file must exist there regardless.
-  local overlay="$cfg_dir/agent.md"
-  local agent_src="$src_dir/agent/zsh-companion.md"
-  local agent_dst="$cfg_base/opencode/agent/zsh-companion.md"
-  if [[ -f "$overlay" && -f "$agent_src" ]]; then
-    local composed
-    composed="${agent_dst}.$$.tmp"
-    { cat "$agent_src"; print; cat "$overlay" } > "$composed" 2>/dev/null &&
-      { cmp -s "$composed" "$agent_dst" || mv -f "$composed" "$agent_dst" }
-    rm -f "$composed" 2>/dev/null
-  fi
 }
 __zom_install_opencode_parts

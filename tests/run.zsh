@@ -93,7 +93,7 @@ sandbox() {
   TD=$(mktemp -d)
   # The plugin's own exports must not leak in from whoever runs the suite:
   # they are what S6 asserts against.
-  unset ZOM_PASSTHROUGH_FILE ZOM_PASSTHROUGH_KEYS
+  unset ZOM_PASSTHROUGH_FILE ZOM_PASSTHROUGH_KEYS ZOM_CONFIG ZOM_PYTHON
   export HOME="$TD/home"
   export XDG_CONFIG_HOME="$TD/home/.config"
   export XDG_DATA_HOME="$TD/home/.local/share"
@@ -564,7 +564,8 @@ t_S18_zom_config() {
   assert_contains "S18 resume default"          "$out" "resume             main  (default)"
   assert_contains "S18 replayLimit default"     "$out" "replayLimit        50  (default)"
   assert_contains "S18 no recipes"              "$out" "(none defined)"
-  assert_contains "S18 agent part listed"       "$out" "zsh-companion.md"
+  assert_contains "S18 host side is one file"   "$out" "opencode/plugins/zom-companion.js (regular file)"
+  assert_not_contains "S18 no agent file on host" "$out" "opencode/agent"
   assert_contains "S18 companion key present"   "$out" "failureTtlSeconds  600  (default)"
   assert_contains "S18 model unpinned shown"     "$out" "(not pinned — agent default)"
   sandbox
@@ -591,21 +592,19 @@ CFG
   assert_contains "S18 bad recipe flagged same line" "$badline" "INVALID"
 }
 
-t_S19_agent_md_frontmatter() {
-  # the installed agent md is a behavior contract; its frontmatter may carry
-  # only identity keys. Anything else (a model pin, a hidden toggle for other
-  # agents) must fail the suite, so it cannot creep in invisibly.
-  local md="$ROOT/agent/zsh-companion.md"
-  assert_file_exists "$md" "S19 agent md present in repo"
-  local keys k
-  keys=$(awk 'NR==1 && /^---[[:space:]]*$/ {f=1; next} f && /^---[[:space:]]*$/ {exit} f && /^[A-Za-z][A-Za-z0-9]*:/ {print substr($0,1,index($0,":")-1)}' "$md")
-  assert_contains "S19 frontmatter parsed" "$keys" "description"
-  for k in ${(f)keys}; do
-    case "$k" in
-      description|mode|hidden) ok "S19 frontmatter key allowed: $k" ;;
-      *) bad "S19 frontmatter key allowed: $k" "unexpected key — move behavior into the body or config.toml" ;;
-    esac
-  done
+t_S19_agent_prompt_seed() {
+  # The prompt is the user's file under the plugin's own config dir. Loading
+  # seeds it once from the repo template and never overwrites an edit.
+  sandbox
+  local cfg="$XDG_CONFIG_HOME/zsh-opencode-mini/agent.md"
+  run_zsh 'true'
+  assert_file_exists "$cfg" "S19 prompt seeded on first load"
+  assert_contains "S19 seed equals the template" "$(cat "$cfg")" "You run inside the user's terminal."
+  print -r -- "my own prompt" > "$cfg"
+  run_zsh 'true'
+  assert_contains "S19 edit survives a reload" "$(cat "$cfg")" "my own prompt"
+  assert_not_contains "S19 seed not reapplied over an edit" "$(cat "$cfg")" "You run inside the user's terminal."
+  cleanup
 }
 
 t_S20_widget_always_cold_start() {
@@ -1208,37 +1207,18 @@ EOFCURL
   cleanup
 }
 
-# S41: the agent prompt ships generic; personal taste lives in the plugin's own
-# config dir and is composed on install, so upgrades never clobber it and the
-# repo never carries one user's preferences.
-t_S41_agent_overlay() {
-  sandbox
-  write_config '{"shell":{"binary":"opencode-zom"}}'
-  local dst="$XDG_CONFIG_HOME/opencode/agent/zsh-companion.md"
-  run_zsh 'true'
-  assert_contains "S41 base prompt installed without overlay" "$(cat "$dst" 2>/dev/null)" "Your working directory IS the directory"
-  print -r -- "Prefer tilth over grep, cat and find." > "$XDG_CONFIG_HOME/zsh-opencode-mini/agent.md"
-  run_zsh 'true'
-  assert_contains "S41 overlay appended to the product prompt" "$(cat "$dst")" "Prefer tilth over grep, cat and find."
-  assert_contains "S41 base prompt survives the overlay" "$(cat "$dst")" "Your working directory IS the directory"
-  rm -f "$XDG_CONFIG_HOME/zsh-opencode-mini/agent.md"
-  run_zsh 'true'
-  assert_not_contains "S41 removing the overlay restores the product prompt" "$(cat "$dst")" "Prefer tilth over grep, cat and find."
-  cleanup
-}
-
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
          t_S12_err_return_survival t_S13_broken_config t_S14_concurrent_append \
          t_S15_zom_last_empty t_S16_outbox_cursor t_S16_outbox_malformed t_S17_zom_bg \
-         t_S18_zom_config t_S19_agent_md_frontmatter t_S20_widget_always_cold_start t_S21_resource_idempotent \
+         t_S18_zom_config t_S19_agent_prompt_seed t_S20_widget_always_cold_start t_S21_resource_idempotent \
          t_S22_argv_probe t_S23_sequence_conflict t_S24_regression_fixes \
          t_S25_history_retention t_S26_unclaimed_hint t_S27_hook_context \
          t_S28_external_hook t_S29_size_sentinel t_S30_notices t_S31_spawn_measurement \
          t_S32_prefill_consumed_once t_S33_hook_stdin_tty t_S34_osc_switch \
          t_S35_stderr_tail t_S36_drain_bg_skip t_S37_stderr_dual_mode \
-         t_S38_failure_tty_scope t_S39_hook_registration t_S40_session_dir t_S41_agent_overlay; do
+         t_S38_failure_tty_scope t_S39_hook_registration t_S40_session_dir; do
   print -r -- "[$t]"
   $t
 done

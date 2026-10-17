@@ -13,7 +13,8 @@ companion 插件消费它们（`zom_context`、失败感知、recipe 提示、�
   目录名已被否掉，不要恢复。
 - `extensions/*.js`：纯策略模块。宿主管机制（事件、落盘、报告），扩展只做判断。
   新增扩展不需要改安装器——安装器镜像整个目录（含删除），loader 扫到即加载。
-- `agent/zsh-companion.md`：agent 提示词，只有行为规则。
+- `agent.example.md`：agent 提示词模板，安装时只在 `<配置目录>/agent.md` 缺失时落地一次；
+  运行读的是用户那份，不是仓库这份。agent 本身由 `companion.js` 在 setup 里注册。
 - `config.example.toml`：逐键注释的配置模板，是配置面的权威文档。
 
 ## 不变量
