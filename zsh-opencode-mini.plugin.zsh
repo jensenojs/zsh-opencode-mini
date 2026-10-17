@@ -137,7 +137,7 @@ typeset -gA ZOM_DEFAULTS=(
   [stderrCapture]="on"
   [failurePrefill]=$'上一条命令失败了（exit {exit}）：{cmd}\n帮我分析失败原因并给出修复建议'
   [model]=""
-  [leader]="ctrl+g"
+  [leader]="ctrl+m"
   [failureTtlSeconds]="600"
   [recentDefaultN]="20"
 )

@@ -85,7 +85,7 @@ stderrCapture = "on"
 # model untouched. mini has no variant-only flag.
 model = ""
 
-# Leader for mini's own keybindings ("ctrl+g" by default). mini binds ctrl+x to
+# Leader for mini's own keybindings ("ctrl+m" by default). mini binds ctrl+x to
 # "hide back to the shell", so it cannot share the main TUI's leader; this one
 # is passed to the binary as --leader and affects mini only.
 #
@@ -94,7 +94,7 @@ model = ""
 # ctrl+[ is Esc. mini asks for the protocol itself, so such keys work inside
 # mini on terminals that support it — but if they don't, the leader silently
 # becomes Enter. Keep a real control key here unless you know your terminal.
-leader = "ctrl+g"
+leader = "ctrl+m"
 
 [companion]
 # How long (seconds) a failed command stays "fresh" for context injection.
