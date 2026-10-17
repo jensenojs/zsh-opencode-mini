@@ -202,7 +202,7 @@ const readOutbox = (dataDir) =>
 try {
   // 1. V2 ctx loads and registers both surfaces
   const { ctx, state } = makeCtx()
-  plugin.setup(ctx)
+  await plugin.setup(ctx)
   state.tools.length === 1 && state.tools[0].name === "zom_context"
     ? ok("v2 loads")
     : bad("v2 loads", `tools=${JSON.stringify(state.tools.map(t => t.name))}`)
@@ -229,7 +229,7 @@ try {
 
   // 4. V3 ctx -> loud refusal
   try {
-    plugin.setup(makeCtx({ version: "3.0.0" }).ctx)
+    await plugin.setup(makeCtx({ version: "3.0.0" }).ctx)
     bad("v3 refused loudly", "setup() did not throw")
   } catch (e) {
     String(e.message).includes("plugin API mismatch")
@@ -241,7 +241,7 @@ try {
   {
     signal(now - 30)
     const { ctx, state } = makeCtx()
-    const clean = plugin.setup(ctx)
+    const clean = await plugin.setup(ctx)
     const tool = state.tools.find((t) => t.name === "zom_context")
     const res = await tool.execute({ query: "last_failure" })
     const parsed = JSON.parse(res.content)
@@ -275,7 +275,7 @@ try {
     for (const [name, jsonc, needle] of cases) {
       const sb = rootSandbox(); sb.use(); sb.write(jsonc)
       try {
-        const c = plugin.setup(makeCtx().ctx)
+        const c = await plugin.setup(makeCtx().ctx)
         c() // must not leak a watcher when setup wrongly succeeds
         allOk = false; whys.push(`${name}: no throw`)
       } catch (e) {
@@ -291,7 +291,7 @@ try {
     const sb = rootSandbox(); sb.use()
     sb.write(`{"recipes":{"x":{"on":"failure","model":"p/m","prompt":"p","deliver":"outbox"}}}`)
     try {
-      const c = plugin.setup(makeCtx({ omit: ["generate"] }).ctx)
+      const c = await plugin.setup(makeCtx({ omit: ["generate"] }).ctx)
       c()
       bad("probe gating refuses", "missing generate.text did not throw")
     } catch (e) {
@@ -300,7 +300,7 @@ try {
         : bad("probe gating refuses", e.message)
     }
     try {
-      const c = plugin.setup(makeCtx({ omit: ["event"] }).ctx)
+      const c = await plugin.setup(makeCtx({ omit: ["event"] }).ctx)
       c()
       bad("event probe unconditional", "missing event.subscribe did not throw")
     } catch (e) {
@@ -315,7 +315,7 @@ try {
     const sb = rootSandbox(); sb.use()
     sb.write(`{"recipes":{"hint":{"on":"failure","model":"prov/model-1","prompt":"cmd={cmd} exit={exit} cwd={cwd}","deliver":"outbox"}}}`)
     const { ctx, state } = makeCtx()
-    const clean = plugin.setup(ctx)
+    const clean = await plugin.setup(ctx)
     // same epoch re-fired by a duplicate fs event must not re-generate; the
     // epoch that actually fired is the one the helper landed on
     const firedEpoch = await fireViaWatcher(sb.dataDir, { ts: "x", epoch: now, cwd: "/w", exit: 127, cmd: "make test" }, () => state.generateCalls.length, 1)
@@ -342,7 +342,7 @@ try {
     const sb = rootSandbox(); sb.use()
     sb.write(`{"recipes":{"hint":{"on":"failure","model":"p/m","prompt":"p","deliver":"outbox","exitFilter":[1]}}}`)
     const { ctx, state } = makeCtx()
-    const clean = plugin.setup(ctx)
+    const clean = await plugin.setup(ctx)
     atomicSignal(sb.dataDir, { ts: "x", epoch: now, cwd: "/w", exit: 127, cmd: "x" })
     await new Promise((r) => setTimeout(r, 400))
     state.generateCalls.length === 0
@@ -358,7 +358,7 @@ try {
     const sb = rootSandbox(); sb.use()
     sb.write(`{"recipes":{"hint":{"on":"failure","model":"p/m","prompt":"p","deliver":"outbox","ratePerHour":1}}}`)
     const { ctx, state } = makeCtx()
-    const clean = plugin.setup(ctx)
+    const clean = await plugin.setup(ctx)
     await fireViaWatcher(sb.dataDir, { ts: "x", epoch: now, cwd: "/w", exit: 1, cmd: "x" }, () => state.generateCalls.length, 1)
     atomicSignal(sb.dataDir, { ts: "x", epoch: now + 1, cwd: "/w", exit: 2, cmd: "y" })
     await new Promise((r) => setTimeout(r, 400))
@@ -375,7 +375,7 @@ try {
     const sb = rootSandbox(); sb.use()
     sb.write(`{"recipes":{"hint":{"on":"failure","model":"p/m","prompt":"p","deliver":"next-session","ttlSeconds":0}}}`)
     const { ctx, state } = makeCtx()
-    const clean = plugin.setup(ctx)
+    const clean = await plugin.setup(ctx)
     const gotHook = await fireViaWatcher(sb.dataDir, { ts: "x", epoch: now, cwd: "/w", exit: 1, cmd: "x" }, () => state.generateCalls.length, 1)
       && readOutbox(sb.dataDir).length === 0
     const evx = contextEvent()
@@ -398,7 +398,7 @@ try {
     const sb = rootSandbox(); sb.use()
     sb.write(`{"recipes":{"explain":{"on":"manual","model":"p/m","prompt":"explain {cmd}","deliver":"outbox"}}}`)
     const { ctx, state } = makeCtx()
-    const clean = plugin.setup(ctx)
+    const clean = await plugin.setup(ctx)
     const tool = state.tools.find((t) => t.name === "zom_recipe_explain")
     await tool.execute({ cmd: "git rebase" })
     const call = state.generateCalls[0]
@@ -413,7 +413,7 @@ try {
     const sb = rootSandbox(); sb.use()
     sb.write(`{"recipes":{"hint":{"on":"failure","model":"p/m","prompt":"p","deliver":"outbox"}}}`)
     const { ctx, state } = makeCtx()
-    const clean = plugin.setup(ctx)
+    const clean = await plugin.setup(ctx)
     const sig = state.signals[0]
     clean()
     const aborted = sig?.aborted === true
@@ -431,7 +431,7 @@ try {
   {
     const sb = rootSandbox(); sb.use()
     const { ctx, state } = makeCtx()
-    const clean = plugin.setup(ctx)
+    const clean = await plugin.setup(ctx)
     writeFileSync(join(sb.dataDir, "bg.jsonl"), JSON.stringify({ sid: "ses_zom-bg-1", pid: 1 }) + "\n")
     const feed = state.outboxFeeds[0]
     // other event types never notify (session.status does not exist in v2)
@@ -480,7 +480,7 @@ try {
     const sb = rootSandbox(); sb.use()
     sb.write(`{"recipes":{"poke":{"on":"bg-done","model":"p/m","prompt":"done: {sid} in {cwd}","deliver":"outbox"}}}`)
     const { ctx, state } = makeCtx()
-    const clean = plugin.setup(ctx)
+    const clean = await plugin.setup(ctx)
     writeFileSync(join(sb.dataDir, "bg.jsonl"), JSON.stringify({ sid: "ses_zom-bg-1", cwd: "/w" }) + "\n" + JSON.stringify({ sid: "ses_zom-bg-2", cwd: "/x" }) + "\n")
     const feed = state.outboxFeeds[0]
     feed.push({ type: "session.execution.succeeded", data: { sessionID: "ses_zom-bg-1" } })
@@ -511,7 +511,7 @@ try {
   {
     const sb = rootSandbox(); sb.use()
     const { ctx, state } = makeCtx()
-    const clean = plugin.setup(ctx)
+    const clean = await plugin.setup(ctx)
     const notices = join(sb.dataDir, "notices.jsonl")
     writeFileSync(notices,
       JSON.stringify({ ts: now - 100, kind: "hook-failure", text: "spawn hook foo exited 1 (kind=bg); it did not run" }) + "\n" +
@@ -543,7 +543,7 @@ try {
   {
     const sb = rootSandbox(); sb.use()
     const { ctx, state } = makeCtx()
-    const clean = plugin.setup(ctx)
+    const clean = await plugin.setup(ctx)
     writeFileSync(join(sb.dataDir, "bg.jsonl"), JSON.stringify({ sid: "ses_zom-bg-inj", cwd: "/proj" }) + "\n")
     state.outboxFeeds[0].push({ type: "session.execution.succeeded", data: { sessionID: "ses_zom-bg-inj" } })
     const rec = await waitFor(() => readOutbox(sb.dataDir).length === 1) && readOutbox(sb.dataDir)[0]
@@ -588,7 +588,7 @@ try {
     const sb = rootSandbox(); sb.use()
     sb.write(`{"recipes":{"hint":{"on":"failure","model":"p/m","prompt":"err=[{stderr}]","deliver":"outbox"}}}`)
     const { ctx, state } = makeCtx()
-    const clean = plugin.setup(ctx)
+    const clean = await plugin.setup(ctx)
     const fired = await fireViaWatcher(sb.dataDir,
       { ts: "x", epoch: now, cwd: "/w", exit: 1, cmd: "x", stderr: "boom\nline2" },
       () => state.generateCalls.length, 1)
@@ -599,7 +599,7 @@ try {
     const sb2 = rootSandbox(); sb2.use()
     sb2.write(`{"recipes":{"hint":{"on":"failure","model":"p/m","prompt":"err=[{stderr}]","deliver":"outbox"}}}`)
     const { ctx: ctx2, state: state2 } = makeCtx()
-    const clean2 = plugin.setup(ctx2)
+    const clean2 = await plugin.setup(ctx2)
     const fired2 = await fireViaWatcher(sb2.dataDir,
       { ts: "x", epoch: now, cwd: "/w", exit: 1, cmd: "x" },
       () => state2.generateCalls.length, 1)
@@ -615,7 +615,7 @@ try {
   {
     const sb = rootSandbox(); sb.use()
     const { ctx, state } = makeCtx()
-    const clean = plugin.setup(ctx)
+    const clean = await plugin.setup(ctx)
     const d = new Date()
     const month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
     const today = `${month}-${String(d.getDate()).padStart(2, "0")}`
@@ -654,7 +654,7 @@ try {
     const sb = rootSandbox(); sb.use()
     sb.write(`{"recipes":{"hint":{"on":"failure","model":"p/m","prompt":"p","deliver":"next-session"}}}`)
     const { ctx, state } = makeCtx()
-    const clean = plugin.setup(ctx)
+    const clean = await plugin.setup(ctx)
     const evz = contextEvent()
     state.contextHooks[0](evz)
     evz.system.length === 0
@@ -671,7 +671,7 @@ try {
     const sb = rootSandbox(); sb.use()
     sb.write(`{"recipes":{"explain":{"on":"manual","model":"p/m","prompt":"explain {cmd}","deliver":"outbox"}}}`)
     const { ctx, state } = makeCtx()
-    const clean = plugin.setup(ctx)
+    const clean = await plugin.setup(ctx)
     const tool = state.tools.find((t) => t.name === "zom_recipe_explain")
     const outbox = join(sb.dataDir, "outbox.jsonl")
     // uniform-length pad records keep the retained-tail math exact
@@ -735,14 +735,14 @@ try {
     const sigWithTty = (tty) => atomicSignal(shared.dataDir, {
       ts: "x", epoch: now, cwd: "/tmp", exit: 1, cmd: "cargo build --release", tty,
     })
-    const toolOf = () => {
+    const toolOf = async () => {
       const { ctx, state } = makeCtx()
-      plugin.setup(ctx)
+      await plugin.setup(ctx)
       return state.tools.find((t) => t.name === "zom_context")
     }
-    const hookInjects = () => {
+    const hookInjects = async () => {
       const { ctx, state } = makeCtx()
-      plugin.setup(ctx)
+      await plugin.setup(ctx)
       const ev = contextEvent()
       state.contextHooks[0](ev)
       return ev.system.filter((s) => String(s.text).includes("failed")).length
@@ -751,32 +751,32 @@ try {
     // no summon record: cannot tell which shell is asking -> global-latest
     removeSpawns()
     sigWithTty("/dev/ttysA")
-    const out0 = await toolOf().execute({ query: "last_failure" })
-    out0.content.includes("cargo build") && hookInjects() === 1
+    const out0 = await (await toolOf()).execute({ query: "last_failure" })
+    out0.content.includes("cargo build") && (await hookInjects()) === 1
       ? ok("no spawn record degrades to global-latest")
-      : bad("no spawn record degrades to global-latest", JSON.stringify({ out: out0.content, injects: hookInjects() }))
+      : bad("no spawn record degrades to global-latest", JSON.stringify({ out: out0.content, injects: await hookInjects() }))
 
     // another terminal's failure: hidden from tool and injection
     writeSpawns("/dev/ttysB", "/w")
-    const out1 = await toolOf().execute({ query: "last_failure" })
-    out1.content.includes("no failed command in this terminal") && hookInjects() === 0
+    const out1 = await (await toolOf()).execute({ query: "last_failure" })
+    out1.content.includes("no failed command in this terminal") && (await hookInjects()) === 0
       ? ok("foreign-tty failure hidden")
-      : bad("foreign-tty failure hidden", JSON.stringify({ out: out1.content, injects: hookInjects() }))
+      : bad("foreign-tty failure hidden", JSON.stringify({ out: out1.content, injects: await hookInjects() }))
 
     // the owner still sees it
     writeSpawns("/dev/ttysA", "/w")
-    const out2 = await toolOf().execute({ query: "last_failure" })
-    out2.content.includes("cargo build") && hookInjects() === 1
+    const out2 = await (await toolOf()).execute({ query: "last_failure" })
+    out2.content.includes("cargo build") && (await hookInjects()) === 1
       ? ok("own-tty failure visible")
-      : bad("own-tty failure visible", JSON.stringify({ out: out2.content, injects: hookInjects() }))
+      : bad("own-tty failure visible", JSON.stringify({ out: out2.content, injects: await hookInjects() }))
 
     // legacy record without tty field: owned by everyone
     atomicSignal(shared.dataDir, { ts: "x", epoch: now, cwd: "/tmp", exit: 1, cmd: "cargo build --release" })
     writeSpawns("/dev/ttysB", "/w")
-    const out3 = await toolOf().execute({ query: "last_failure" })
-    out3.content.includes("cargo build") && hookInjects() === 1
+    const out3 = await (await toolOf()).execute({ query: "last_failure" })
+    out3.content.includes("cargo build") && (await hookInjects()) === 1
       ? ok("legacy no-tty record stays global-latest")
-      : bad("legacy no-tty record stays global-latest", JSON.stringify({ out: out3.content, injects: hookInjects() }))
+      : bad("legacy no-tty record stays global-latest", JSON.stringify({ out: out3.content, injects: await hookInjects() }))
     removeSpawns()
   }
 
@@ -799,13 +799,13 @@ try {
       line("e-proj-new", "/proj"),
     ].join("\n") + "\n")
     const spawnsPath = join(shared.dataDir, "spawns.jsonl")
-    const toolOf = () => {
+    const toolOf = async () => {
       const { ctx, state } = makeCtx()
-      plugin.setup(ctx)
+      await plugin.setup(ctx)
       return state.tools.find((t) => t.name === "zom_context")
     }
     const cmdsOf = async (query) => {
-      const out = await toolOf().execute(query)
+      const out = await (await toolOf()).execute(query)
       return out.content.split("\n").map((l) => { try { return JSON.parse(l).cmd } catch { return l } })
     }
 

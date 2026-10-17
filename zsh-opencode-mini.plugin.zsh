@@ -996,6 +996,28 @@ __zom_mini_argv() {
   ZOM_ARGV+=("$@")   # caller's extra args, verbatim
 }
 
+# A session's working directory is stored on the session, not derived from the
+# directory the launcher happens to sit in — resuming from elsewhere would keep
+# the old one forever, and every project-shaped thing (AGENTS.md, tilth, tools)
+# would keep describing the wrong tree. The TUI has /cd for this; the summon
+# path has to do the same move up front, through the service the CLI already
+# launched. Best effort: a server that is not up yet (404/timeout) just means
+# the session keeps its directory, never a failed summon.
+__zom_sync_session_dir() {  # <sid>
+  local sid=$1
+  local state=${XDG_STATE_HOME:-$HOME/.local/state}/opencode
+  local file=$state/service-${${ZOM_BINARY:t}#opencode-}.json
+  [[ -r "$file" ]] || return 0
+  local url pw
+  url=$(jq -r '.url // empty' "$file" 2>/dev/null) || return 0
+  pw=$(jq -r '.password // empty' "$file" 2>/dev/null) || return 0
+  [[ -n "$url" && -n "$pw" ]] || return 0
+  curl -fsS -m 1 -o /dev/null -X POST "$url/api/session/$sid/move" \
+    -u "opencode:$pw" -H 'content-type: application/json' \
+    -d "$(jq -Rn --arg d "$PWD" '{directory:$d}')" 2>/dev/null
+  return 0
+}
+
 # The single launch path, shared by the keybind widget and the `zom` function.
 # Kept free of ZLE calls so tests can exercise it without a line editor.
 __zom_launch_mini() {
@@ -1005,6 +1027,7 @@ __zom_launch_mini() {
   # The session id is knowable only when resuming the dedicated main session.
   local hook_sid=""
   [[ "$ZOM_RESUME" == main ]] && hook_sid="$ZOM_MAIN_SESSION"
+  [[ -n "$hook_sid" ]] && __zom_sync_session_dir "$hook_sid"
   __zom_run_spawn_hooks mini "$hook_sid"
   # The summon loop reuses one session; the entry ("▪ oc mini …") and exit
   # ("Session …") splash banners would stamp a fresh pair into scrollback on

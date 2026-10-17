@@ -1182,6 +1182,32 @@ REPRO
   cleanup
 }
 
+# S40: a resumed session is moved to the directory the user summoned from —
+# the session's directory is stored on the session, so a launch from another
+# tree would otherwise keep describing the old one (AGENTS.md, tilth, tools).
+# curl is stubbed; the assertions are the request shape, not the transport.
+t_S40_session_dir() {
+  sandbox
+  export XDG_STATE_HOME="$TD/state"
+  mkdir -p "$XDG_STATE_HOME/opencode" "$TD/bin"
+  print -r -- '{"url":"http://127.0.0.1:9","password":"pw"}' > "$XDG_STATE_HOME/opencode/service-zom.json"
+  cat > "$TD/bin/curl" <<'EOFCURL'
+#!/bin/sh
+printf '%s\n' "$*" >> "$ZOM_MOCK_LOG"
+EOFCURL
+  chmod +x "$TD/bin/curl"
+  PATH="$TD/bin:$MOCKBIN:$PATH" zsh -f -c "source '$PLUGIN'; ZOM_BINARY=opencode-zom; cd /tmp; __zom_sync_session_dir ses_probe"
+  local log; log=$(cat "$ZOM_MOCK_LOG")
+  assert_contains "S40 move targets the session endpoint" "$log" "/api/session/ses_probe/move"
+  assert_contains "S40 move carries basic auth" "$log" "opencode:pw"
+  assert_contains "S40 move sends the summon directory" "$log" '"directory": "/tmp"'
+  : > "$ZOM_MOCK_LOG"
+  rm -f "$XDG_STATE_HOME/opencode/service-zom.json"
+  PATH="$TD/bin:$MOCKBIN:$PATH" zsh -f -c "source '$PLUGIN'; ZOM_BINARY=opencode-zom; __zom_sync_session_dir ses_probe"
+  assert_eq "S40 no service file -> no request" "$(cat "$ZOM_MOCK_LOG")" ""
+  cleanup
+}
+
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
@@ -1193,7 +1219,7 @@ for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload
          t_S28_external_hook t_S29_size_sentinel t_S30_notices t_S31_spawn_measurement \
          t_S32_prefill_consumed_once t_S33_hook_stdin_tty t_S34_osc_switch \
          t_S35_stderr_tail t_S36_drain_bg_skip t_S37_stderr_dual_mode \
-         t_S38_failure_tty_scope t_S39_hook_registration; do
+         t_S38_failure_tty_scope t_S39_hook_registration t_S40_session_dir; do
   print -r -- "[$t]"
   $t
 done
