@@ -671,6 +671,69 @@ function delta(ext, sid, dInput, dRead) {
   rmSync(root, { recursive: true, force: true })
 }
 
+// --- disk-watch ------------------------------------------------------------
+{
+  const { default: diskWatch, shouldWarn } = await import("../extensions/disk-watch.js")
+  const HOUR = 60 * 60 * 1000
+  check("disk-watch: below threshold never warns", shouldWarn(0.5, undefined, 1000) === false)
+  check("disk-watch: at threshold warns once", shouldWarn(0.9, undefined, 1000) === true)
+  check("disk-watch: inside cooldown stays quiet", shouldWarn(0.93, 1000, 1000 + 3 * HOUR) === false)
+  check("disk-watch: after cooldown reminds", shouldWarn(0.93, 1000, 1000 + 7 * HOUR) === true)
+  check("disk-watch: recovered disk re-arms silently", shouldWarn(0.8, 1000, 1000 + 7 * HOUR) === false)
+
+  const fullStatfs = () => ({ blocks: 1000n, bsize: 4096n, bavail: 50n })
+  const boot = (statfs) => {
+    const c = makeCtx()
+    const backend = new Map()
+    const h = makeHost(backend).host
+    h.dataDir = "/somewhere"
+    if (statfs) h.statfs = statfs
+    return { c, h, backend }
+  }
+  const event = (c) => {
+    const messages = []
+    c.fire("context", { sessionID: "ses_disk", system: [], messages, agent: "mini" })
+    return messages.map((m) => m.content.map((p) => p.text).join("")).join("\n")
+  }
+  {
+    const { c, h } = boot(fullStatfs)
+    await diskWatch.setup(c.ctx, h)
+    const first = event(c)
+    check("disk-watch: a full disk injects a warning", first.includes("zom-disk-watch") && first.includes("95%"))
+    const second = event(c)
+    check("disk-watch: the next turn does not repeat it", second === "")
+  }
+  {
+    // Cross-process reminder: a persisted lastWarnAt from seven hours ago,
+    // disk still full — the fresh instance reminds.
+    const { c, h } = boot(fullStatfs)
+    h.storage("zom-disk-watch").set({ lastWarnAt: Date.now() - 7 * 60 * 60 * 1000 })
+    await diskWatch.setup(c.ctx, h)
+    check("disk-watch: past cooldown it reminds", event(c).includes("zom-disk-watch"))
+  }
+  {
+    const { c, h } = boot(() => ({ blocks: 1000n, bsize: 4096n, bavail: 500n }))
+    await diskWatch.setup(c.ctx, h)
+    check("disk-watch: a half-full disk stays quiet", event(c) === "")
+  }
+  {
+    const { c, h } = boot(() => {
+      throw new Error("EIO")
+    })
+    await diskWatch.setup(c.ctx, h)
+    check("disk-watch: a failing statfs is swallowed, not thrown", event(c) === "")
+  }
+  {
+    // Only the mini's own conversation is nagged; subagents share the disk
+    // but not the composer this notice would land in.
+    const { c, h } = boot(fullStatfs)
+    await diskWatch.setup(c.ctx, h)
+    const messages = []
+    c.fire("context", { sessionID: "ses_sub", system: [], messages, agent: "other-agent" })
+    check("disk-watch: other agents are not injected", messages.length === 0)
+  }
+}
+
 console.log(`extensions.test: ${pass} checks, ${fail} failed`)
 // The exit code is what CI and run.zsh read; a FAIL line alone is a message in
 // a bottle.
