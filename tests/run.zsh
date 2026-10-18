@@ -97,7 +97,9 @@ sandbox() {
   export HOME="$TD/home"
   export XDG_CONFIG_HOME="$TD/home/.config"
   export XDG_DATA_HOME="$TD/home/.local/share"
+  export XDG_STATE_HOME="$TD/home/.local/state"
   DD="$XDG_DATA_HOME/zsh-opencode-mini"      # default dataDir the plugin will pick
+  SD="$XDG_STATE_HOME/zsh-opencode-mini"     # default stateDir: the main-session pointer
   export ZOM_MOCK_LOG="$TD/mock.log"
   : > "$ZOM_MOCK_LOG"
 }
@@ -250,9 +252,13 @@ t_S5_osc_frame() {
 t_S6_zom_launch() {
   sandbox
   run_zsh 'zom extra-arg' >/dev/null 2>&1
-  local log
+  run_zsh 'zom extra-arg' >/dev/null 2>&1
+  local log sid
+  sid=$(cat "$SD/main-session")
   log=$(cat "$ZOM_MOCK_LOG")
-  assert_contains "S6 default resume=main pins session" "$log" "argv=mini -s ses_zom-main --replay-limit 50 --agent mini --leader ctrl+m extra-arg"
+  assert_contains "S6 default resume=main resumes the pointer sid" "$log" "argv=mini -s $sid --replay-limit 50 --agent mini --leader ctrl+m extra-arg"
+  assert_eq "S6 pointer minted once, reused across launches" "$(grep -o "argv=mini -s ses_[0-9a-f]*" "$ZOM_MOCK_LOG" | sort -u | wc -l | tr -d ' ')" "1"
+  assert_contains "S6 shared database flag default on" "$log" "dbflag=1"
   cleanup
   sandbox
   write_config <<'EOF'
@@ -261,14 +267,17 @@ EOF
   run_zsh 'zom extra-arg' >/dev/null 2>&1
   log=$(cat "$ZOM_MOCK_LOG")
   assert_contains "S6 resume=off starts fresh" "$log" "argv=mini --agent mini --leader ctrl+m extra-arg"
+  assert_contains "S6 shared database flag still on" "$log" "dbflag=1"
   cleanup
   sandbox
   write_config <<'EOF'
-{ "shell": { "resume": "main", "replay": "off" } }
+{ "shell": { "resume": "main", "replay": "off", "sharedDatabase": "off" } }
 EOF
   run_zsh 'zom extra-arg' >/dev/null 2>&1
   log=$(cat "$ZOM_MOCK_LOG")
-  assert_contains "S6 replay=off passes --no-replay" "$log" "argv=mini -s ses_zom-main --no-replay --agent mini --leader ctrl+m extra-arg"
+  sid=$(cat "$SD/main-session")
+  assert_contains "S6 replay=off passes --no-replay" "$log" "argv=mini -s $sid --no-replay --agent mini --leader ctrl+m extra-arg"
+  assert_contains "S6 sharedDatabase off drops the env switch" "$log" "dbflag=<unset>"
   cleanup
   sandbox
   write_config <<'EOF'
@@ -276,7 +285,7 @@ EOF
 EOF
   run_zsh 'zom extra-arg' >/dev/null 2>&1
   log=$(cat "$ZOM_MOCK_LOG")
-  assert_contains "S6 replayLimit honoured" "$log" "argv=mini -s ses_zom-main --replay-limit 7 --agent mini --leader ctrl+m extra-arg"
+  assert_contains "S6 replayLimit honoured" "$log" "argv=mini -s $(cat "$SD/main-session") --replay-limit 7 --agent mini --leader ctrl+m extra-arg"
   cleanup
   sandbox
   run_command 'git push --force' 'false'   # record a fresh failure
@@ -833,7 +842,7 @@ EOF
   run_zsh 'zsh_hook_probe() { print -r -- "$ZOM_HOOK_KIND|$ZOM_HOOK_SID" >> "'$DD'/hooks2.txt" }
     ZOM_SPAWN_HOOKS=(zsh_hook_probe)
     __zom_launch_mini >/dev/null 2>&1'
-  assert_eq "S27 mini resume=main exposes main sid" "$(cat "$DD/hooks2.txt")" "mini|ses_zom-main"
+  assert_eq "S27 mini resume=main exposes main sid" "$(cat "$DD/hooks2.txt")" "mini|$(cat "$SD/main-session")"
   cleanup
 }
 

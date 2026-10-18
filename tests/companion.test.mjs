@@ -698,6 +698,21 @@ try {
       ? ok("repeat-failure fires once per command per day")
       : bad("repeat-failure fires once per command per day", JSON.stringify(repeats()))
     clean()
+    // A second live process (another server instance sharing the dataDir) sees
+    // the same failure event; its watcher must not append a second hint. Reset
+    // the count to exactly the threshold: only count === threshold appends, so
+    // the dedupe — not the arithmetic — is what keeps this silent.
+    writeFileSync(join(sb.dataDir, `history-${month}.jsonl`),
+      line("make test", 1) + "\n" + line("make test", 1) + "\n" + line("make test", 1) + "\n")
+    const { ctx: ctx2, state: state2 } = makeCtx()
+    const clean2 = await plugin.setup(ctx2)
+    atomicSignal(sb.dataDir, { ts: "x", epoch: (epoch ?? now) + 200, cwd: "/w", exit: 1, cmd: "make test" })
+    await waitFor(() => readFileSync(join(sb.dataDir, "last-failure.json"), "utf8").includes(`${(epoch ?? now) + 200}`))
+    await new Promise((r) => setTimeout(r, 300))
+    repeats().length === 1
+      ? ok("repeat-failure deduped across plugin instances")
+      : bad("repeat-failure deduped across plugin instances", JSON.stringify(repeats()))
+    clean2()
   }
 
   // 15. recipes config with no matching signals leaves zero injection

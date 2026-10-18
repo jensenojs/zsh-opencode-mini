@@ -24,8 +24,11 @@ keybind = "^X"
 keybindConflict = "notify"
 
 # Which session C-x resumes:
-#   "main" (default) — one dedicated assistant session (ses_zom-main),
-#                      isolated from your other opencode sessions
+#   "main" (default) — one dedicated assistant session, isolated from your
+#                      other opencode sessions. The session id is random and
+#                      lives in <stateDir>/main-session: the first launch
+#                      mints it, every later launch resumes it. Delete that
+#                      file and the next launch starts a fresh session.
 #   "off"            — a fresh session every time
 resume = "main"
 
@@ -52,6 +55,13 @@ replayLimit = 50
 # here and the registration, the notice gate and the extensions follow on the
 # next load. Deleting the key falls back to "mini".
 agent = "mini"
+
+# Store mini's data in the same database as the stock opencode binary
+# ("on", default) instead of a per-channel copy. Both binaries must then
+# tolerate each other's schema migrations — fine while the fork tracks a
+# recent upstream tag; set "off" to go back to the isolated
+# opencode-<channel>.db.
+sharedDatabase = "on"
 
 # Keys nobody claims inside mini (not a keymap action, not composer input):
 # "on" (default) logs them to <dataDir>/passthrough.<pid>.keys.log (rolling
@@ -110,6 +120,11 @@ recentDefaultN = 20
 # Identical failures of one command within a day that trigger a single outbox
 # hint (0 disables).
 repeatFailureThreshold = 3
+# Automatic session title: "idle" regenerates the title on the first prompt
+# after a long silence (that prompt is usually the next task); "off" disables.
+# 54 matches opencode-idle-compaction's default notion of "long enough".
+autoTitle = "idle"
+autoTitleIdleMinutes = 54
 
 [recipes]
 # Declarative model calls fired from shell events, evaluated by the opencode

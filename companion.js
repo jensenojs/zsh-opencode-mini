@@ -54,6 +54,8 @@ const DEFAULTS = {
   // Identical failures of one command within a day that trigger a single
   // outbox hint. 0 disables.
   repeatFailureThreshold: 3,
+  autoTitle: "idle",
+  autoTitleIdleMinutes: 54,
 }
 
 // The three trigger sources and the template slots each one actually
@@ -752,10 +754,31 @@ export default {
       // visible, "the third one today" is not.
       const threshold = cfg.repeatFailureThreshold
       if (threshold > 0 && countTodayFailures(monthFile(), sig.cmd) === threshold) {
-        appendOutbox({
-          kind: "repeat-failure",
-          text: `'${sig.cmd}' has failed ${threshold} times today — worth a closer look before retrying again`,
-        })
+        // Every server instance sharing this dataDir runs this watcher, so one
+        // failure event would append one hint per live process. The hint's
+        // identity is (command, day): at most one per outbox per day, whoever
+        // gets there first.
+        const day = new Date().toISOString().slice(0, 10)
+        let queued = false
+        try {
+          for (const line of readFileSync(outboxPath, "utf8").split("\n")) {
+            if (!line.trim()) continue
+            try {
+              const r = JSON.parse(line)
+              if (r.kind === "repeat-failure" && r.day === day && r.cmd === sig.cmd) {
+                queued = true
+                break
+              }
+            } catch {}
+          }
+        } catch {} // no outbox yet — nothing queued
+        if (!queued)
+          appendOutbox({
+            kind: "repeat-failure",
+            day,
+            cmd: sig.cmd,
+            text: `'${sig.cmd}' has failed ${threshold} times today — worth a closer look before retrying again`,
+          })
       }
     })
 
@@ -834,7 +857,7 @@ export default {
     // Await registration: hooks added after setup resolves are invisible to
     // requests already being assembled, and the symptom is a plugin that
     // silently stops seeing context while `loading plugin` still logs fine.
-    await loadExtensions(ctx, dataDir, agentID)
+    await loadExtensions(ctx, dataDir, agentID, cfg)
 
     return () => {
       watcher.close()
@@ -952,7 +975,7 @@ function dispatchUsage(p) {
   }
 }
 
-export async function loadExtensions(ctx, dataDir, agentID = DEFAULT_AGENT) {
+export async function loadExtensions(ctx, dataDir, agentID = DEFAULT_AGENT, cfg = {}) {
   // Extensions live next to config.toml, wherever ZOM_CONFIG points the
   // config — same rule the zsh installer mirrors on the way in.
   const dir = join(dirname(configPath()), "extensions")
@@ -1058,6 +1081,7 @@ export async function loadExtensions(ctx, dataDir, agentID = DEFAULT_AGENT) {
       // The agent id this load registered under; extensions gate on it rather
       // than hard-coding a name that the config may have changed.
       agent: agentID,
+      config: cfg,
     }
     // A hook the extension registers must not be able to break context
     // assembly for everyone else: wrap handlers one by one, attribute

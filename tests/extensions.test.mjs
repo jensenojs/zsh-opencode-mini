@@ -9,6 +9,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import cacheWatch from "../extensions/cache-watch.js"
 import stateWatch from "../extensions/state-watch.js"
+import sessionTitle from "../extensions/session-title.js"
 import { loadExtensions } from "../companion.js"
 
 let pass = 0
@@ -158,6 +159,126 @@ function delta(ext, sid, dInput, dRead) {
   check("stale keys.log removed", !existsSync(old))
   check("fresh keys.log kept", existsSync(fresh))
   for (const f of readdirSync(dir)) unlinkSync(join(dir, f))
+}
+
+// --- session-title ---------------------------------------------------------
+{
+  const shared = new Map()
+  const boot = (config, agent = "mini") => {
+    const c = makeCtx()
+    const updates = []
+    c.ctx.session.update = async (input) => updates.push(input)
+    const h = makeHost(shared, agent)
+    if (config) h.host.config = config
+    return { c, h, updates }
+  }
+  const user = (text) => ({ role: "user", content: [{ type: "text", text }] })
+  const fire = (c, sid, agent = "mini") =>
+    c.fire("context", { sessionID: sid, system: [], messages: [user("下一个任务")], agent })
+  const tick = () => new Promise((r) => setTimeout(r, 0))
+  // The policy is time-based; drive Date.now instead of sleeping.
+  const clock = (start) => {
+    const real = Date.now
+    let now = start
+    Date.now = () => now
+    return {
+      advance: (ms) => {
+        now += ms
+      },
+      restore: () => {
+        Date.now = real
+      },
+    }
+  }
+
+  {
+    const t = clock(1_800_000_000_000)
+    try {
+      const { c, h, updates } = boot()
+      await sessionTitle.setup(c.ctx, h.host)
+      fire(c, "ses_a")
+      await tick()
+      check("the first request only seeds the clock", updates.length === 0)
+      t.advance(60_000)
+      fire(c, "ses_a")
+      await tick()
+      check("a prompt inside the idle window keeps the name", updates.length === 0)
+    } finally {
+      t.restore()
+    }
+  }
+
+  {
+    const t = clock(1_800_000_000_000)
+    try {
+      const { c, h, updates } = boot()
+      await sessionTitle.setup(c.ctx, h.host)
+      fire(c, "ses_b")
+      t.advance(90 * 60_000)
+      fire(c, "ses_b")
+      await tick()
+      check("a prompt after a long silence regenerates the title", updates.length === 1)
+      check(
+        "regeneration goes through the empty-title path",
+        updates[0]?.title === "" && updates[0]?.sessionID === "ses_b",
+      )
+      t.advance(60_000)
+      fire(c, "ses_b")
+      await tick()
+      check("one regeneration per idle gap", updates.length === 1)
+      t.advance(90 * 60_000)
+      fire(c, "ses_b")
+      await tick()
+      check("the next idle gap renames again", updates.length === 2)
+    } finally {
+      t.restore()
+    }
+  }
+
+  {
+    const t = clock(1_800_000_000_000)
+    try {
+      const { c, h, updates } = boot({ autoTitleIdleMinutes: 600 })
+      await sessionTitle.setup(c.ctx, h.host)
+      fire(c, "ses_c")
+      t.advance(90 * 60_000)
+      fire(c, "ses_c")
+      await tick()
+      check("the idle threshold comes from config", updates.length === 0)
+    } finally {
+      t.restore()
+    }
+  }
+
+  {
+    const t = clock(1_800_000_000_000)
+    try {
+      const { c, h, updates } = boot({ autoTitle: "off" })
+      await sessionTitle.setup(c.ctx, h.host)
+      fire(c, "ses_d")
+      t.advance(24 * 3600_000)
+      fire(c, "ses_d")
+      await tick()
+      check("autoTitle = off disables it", updates.length === 0)
+    } finally {
+      t.restore()
+    }
+  }
+
+  {
+    const t = clock(1_800_000_000_000)
+    try {
+      const { c, h, updates } = boot()
+      await sessionTitle.setup(c.ctx, h.host)
+      fire(c, "ses_e", "orchestrator")
+      t.advance(90 * 60_000)
+      fire(c, "ses_e", "orchestrator")
+      await tick()
+      check("other agents' sessions are not renamed", updates.length === 0)
+    } finally {
+      t.restore()
+    }
+  }
 }
 
 // --- isolation via loadExtensions ------------------------------------------

@@ -144,7 +144,7 @@ Two sections, each read by the runtime that owns that concern:
 |---|---|---|---|
 | `shell` | `dataDir` | `~/.local/share/zsh-opencode-mini` | data directory (XDG_DATA_HOME respected) |
 | `shell` | `keybind` | `^X` | summon key; `"off"` disables the binding |
-| `shell` | `resume` | `"main"` | which session C-x reopens: `"main"` = the dedicated `ses_zom-main` (isolated from your other opencode sessions); `"off"` = fresh every time |
+| `shell` | `resume` | `"main"` | which session C-x reopens: `"main"` = the dedicated `ses_zom` (isolated from your other opencode sessions); `"off"` = fresh every time |
 | `shell` | `replay` | `"on"` | what mini redraws when the main session reopens: `"on"` = newest `replayLimit` messages; `"off"` = `--no-replay`, straight to the input line (full history stays in the session) |
 | `shell` | `replayLimit` | `50` | newest-N cap for replay (upstream default 200 — the screen flooding) |
 | `shell` | `binary` | `"opencode"` | which opencode binary mini launches. Pin an absolute path to use a specific build — e.g. a self-built one whose renderer keeps inline scrollback on resume (the official v2.0.22 binary redraws from the top when resuming an existing session) |
@@ -316,7 +316,7 @@ is printed once (the `zom` function still works) — rebind via
 
 - `C-x` — summon `opencode mini` (fullscreen TUI inside a paused ZLE). With
   the default `resume: "main"` this reopens one dedicated assistant session
-  (`ses_zom-main`), isolated from your other opencode sessions; `resume: "off"`
+  (`ses_zom`), isolated from your other opencode sessions; `resume: "off"`
   starts a fresh one. On reopen mini replays only the newest `replayLimit`
   messages (default 50, upstream default 200) — or none at all with
   `replay: "off"` (`--no-replay`); the session itself keeps its full history
@@ -333,7 +333,7 @@ is printed once (the `zom` function still works) — rebind via
   things — "why did that fail", "what did I run earlier today"
 - the same session is reachable from the full TUI on purpose: mini is a thin
   renderer and every piece of session truth lives on the server, so
-  `opencode-zom -s ses_zom-main` in another pane is the debug view of the
+  `opencode-zom -s ses_zom` in another pane is the debug view of the
   exact conversation you were having between prompts (thinking, tool
   arguments, MCP connections, context usage). Both clients have to come from
   the same build: the channel decides the database filename, and a different

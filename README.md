@@ -71,7 +71,7 @@ show — thinking, tool arguments, MCP connections, context usage — open that
 session with the same binary in another pane:
 
 ```bash
-opencode-zom -s ses_zom-main     # or opencode-zom and pick it from the list
+opencode-zom -s ses_zom     # or opencode-zom and pick it from the list
 ```
 
 Both share the history and mini keeps the keyboard inside zsh. Do not send
@@ -83,7 +83,7 @@ channel is a different, empty database — history appears to vanish.
 
 | Key / command | What it does |
 |---|---|
-| `C-x` | open/close the AI mini session (`ses_zom-main`, cwd-aware with the companion binary) |
+| `C-x` | open/close the AI mini session (`ses_zom`, cwd-aware with the companion binary) |
 | `ctrl+z` (in mini) | quit mini cleanly, same as hiding with `C-x`; summon again with `C-x` |
 | other unbound keys (in mini) | handed back to the shell, e.g. `ctrl+o` runs at the zsh prompt |
 | `zom [args]` | scriptable launcher |
