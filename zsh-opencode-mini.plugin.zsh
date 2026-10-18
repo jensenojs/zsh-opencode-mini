@@ -180,7 +180,7 @@ SHELL = {
 COMPANION = {
     "failureTtlSeconds": (INT,), "recentDefaultN": (INT,),
     "repeatFailureThreshold": (INT,), "autoTitle": (STR,),
-    "autoTitleIdleMinutes": (INT,),
+    "autoTitleIdleMinutes": (INT,), "devPath": (STR,),
 }
 RECIPE = {
     "on": (STR,), "model": (STR,), "prompt": (STR,), "deliver": (STR,),

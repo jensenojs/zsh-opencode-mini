@@ -26,10 +26,16 @@ const hashOf = (system, tools) =>
         system.filter((part) => !String(part.text ?? "").startsWith(NOTICE) && !isTailVolatile(part)),
         // Tool descriptions carry the environment too: tilth's label, MCP
         // server text. A directory switch moves them as often as the system
-        // parts, and either one invalidates the same prefix.
+        // parts, and either one invalidates the same prefix. The input schema
+        // is part of what the model was told, so a schema edit is a prefix
+        // change too — hashing only the prose would stay quiet through it.
         Object.entries(tools ?? {})
           .sort(([a], [b]) => (a < b ? -1 : 1))
-          .map(([name, value]) => [name, value?.description ?? ""]),
+          .map(([name, value]) => [
+            name,
+            value?.description ?? "",
+            value?.parameters ?? value?.inputSchema ?? value?.schema ?? null,
+          ]),
       ]),
     )
     .digest("hex")
@@ -37,18 +43,12 @@ const hashOf = (system, tools) =>
 // Delivered as a tail message, not a system part: system parts ride the
 // cached prefix (and never reach the agent's view), a message costs only
 // itself and is visible.
-const notice = () => ({
-  role: "system",
-  content: [
-    {
-      type: "text",
-      text:
-        `${NOTICE} shared prompt prefix changed on this request — ` +
-        `the context before the change re-pays at uncached rates. ` +
-        `The user cannot see this: lead your reply with it.`,
-    },
-  ],
-})
+// The text is delivered through host.inject (a tail message), not pushed onto
+// the event by hand: one channel, so "where does this land" has one answer.
+const noticeText = () =>
+  `${NOTICE} shared prompt prefix changed on this request — ` +
+  `the context before the change re-pays at uncached rates. ` +
+  `The user cannot see this: lead your reply with it.`
 
 
 export default {
@@ -61,6 +61,17 @@ export default {
     const store = host.storage("zom-cache-watch")
     const persisted = store.get() ?? {}
     const hashes = persisted.hashes ?? {} // sessionID -> hash of its last request's prefix
+    // One key per session, never removed: a long-lived install accumulates
+    // sessions it will never see again. JSON preserves insertion order, so the
+    // front is least recently touched.
+    const HASH_CAP = 128
+    const remember = (id, hash) => {
+      delete hashes[id]
+      hashes[id] = hash
+      const keys = Object.keys(hashes)
+      for (const k of keys.slice(0, Math.max(0, keys.length - HASH_CAP))) delete hashes[k]
+      store.set({ hashes })
+    }
 
     ctx.session.hook("context", (event) => {
       // Only the mini's own conversation gets this notice. Every other agent
@@ -76,16 +87,14 @@ export default {
       if (!prev && persisted.lastDir) {
         const moved = persisted.lastDir !== dir
         delete persisted.lastDir
-        hashes[id] = hash
-        store.set({ hashes })
-        if (moved) event.messages.push(notice())
+        remember(id, hash)
+        if (moved) host.inject(event, noticeText())
         return
       }
 
-      hashes[id] = hash
-      store.set({ hashes })
+      remember(id, hash)
       if (!prev || prev === hash) return
-      event.messages.push(notice())
+      host.inject(event, noticeText())
     })
   },
 }

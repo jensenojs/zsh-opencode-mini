@@ -93,7 +93,10 @@ sandbox() {
   TD=$(mktemp -d)
   # The plugin's own exports must not leak in from whoever runs the suite:
   # they are what S6 asserts against.
-  unset ZOM_PASSTHROUGH_FILE ZOM_PASSTHROUGH_KEYS ZOM_CONFIG ZOM_PYTHON
+  # The suite must not inherit the environment of the shell that happens to
+  # run it: OPENCODE_DISABLE_CHANNEL_DB is set inside a real mini session and
+  # would make S6 assert the wrong thing.
+  unset ZOM_PASSTHROUGH_FILE ZOM_PASSTHROUGH_KEYS ZOM_CONFIG ZOM_PYTHON OPENCODE_DISABLE_CHANNEL_DB
   export HOME="$TD/home"
   export XDG_CONFIG_HOME="$TD/home/.config"
   export XDG_DATA_HOME="$TD/home/.local/share"
@@ -103,7 +106,18 @@ sandbox() {
   export ZOM_MOCK_LOG="$TD/mock.log"
   : > "$ZOM_MOCK_LOG"
 }
-cleanup() { [[ -n "$TD" ]] && mv "$TD" /tmp/zom-suite-scratch-$$ 2>/dev/null; TD= }
+# Keep the sandbox only when this scenario failed — a passing run leaves no
+# trace on disk, and a failing one keeps its whole tree for inspection.
+cleanup() {
+  if [[ -n "$TD" ]]; then
+    if (( FAIL > 0 )); then
+      print -r -- "  kept sandbox: $TD"
+    else
+      rm -rf "$TD"
+    fi
+  fi
+  TD=
+}
 
 # write a config.toml into the sandbox
 # Fixtures are written as JSON (compact inline, easy to read) and lowered to
@@ -391,13 +405,31 @@ t_S10_companion_contract() {
     print -r -- "  SKIP  S10 (node not available; companion.js left to manual verification)"
     return 0
   fi
-  local out
-  out=$(node "$ROOT/tests/companion.test.mjs" 2>&1) || true
+  local out rc
+  out=$(node "$ROOT/tests/companion.test.mjs" 2>&1); rc=$?
+  # The exit code is the verdict: substring checks alone let any OTHER failing
+  # check (rotation, tty ownership, recipe slots, cross-process dedupe) pass.
+  assert_eq "S10 companion: every check" "$rc" "0"
   assert_contains "S10 companion: V2 ctx loads"    "$out" "PASS v2 loads"
   assert_contains "S10 companion: tool registered" "$out" "PASS tool registered"
   assert_contains "S10 companion: fresh failure injected" "$out" "PASS fresh failure injected"
   assert_contains "S10 companion: stale failure silent"   "$out" "PASS stale failure silent"
   assert_contains "S10 companion: V3 refused loudly"      "$out" "PASS v3 refused loudly"
+  cleanup
+}
+
+t_S10b_extensions_suite() {
+  sandbox
+  if ! command -v node >/dev/null 2>&1; then
+    print -r -- "  SKIP  S10b (node not available; extensions suite left to manual verification)"
+    return 0
+  fi
+  # Rollback, .broken, quarantine, duplicate ids and the frozen prefix only
+  # exist in this suite; a green integration run that never calls it claims
+  # coverage it does not have.
+  local rc
+  node "$ROOT/tests/extensions.test.mjs" >/dev/null 2>&1; rc=$?
+  assert_eq "S10b extensions: every check" "$rc" "0"
   cleanup
 }
 
@@ -1179,8 +1211,9 @@ __zom_precmd
 print NPRE=\${(M)#preexec_functions:#__zom_preexec}
 print NPCMD=\${(M)#precmd_functions:#__zom_precmd}
 REPRO
-  local out
-  out=$(PATH="$MOCKBIN:$PATH" HOME="$HOME" zsh "$TD/s39-repro.zsh" 2>&1 || true)
+  local out rc
+  { out=$(PATH="$MOCKBIN:$PATH" HOME="$HOME" zsh "$TD/s39-repro.zsh" 2>&1); rc=$?; }
+  assert_eq "S39 repro script ran to completion" "$rc" "0"
   assert_contains "S39 preexec registered exactly once (double source)" "$out" "NPRE=1"
   assert_contains "S39 precmd registered exactly once (double source)" "$out" "NPCMD=1"
   local hist
@@ -1218,7 +1251,8 @@ EOFCURL
 
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
-         t_S9_config_dataDir t_S10_companion_contract t_S11_keybind_conflict \
+         t_S9_config_dataDir t_S10_companion_contract t_S10b_extensions_suite \
+         t_S11_keybind_conflict \
          t_S12_err_return_survival t_S13_broken_config t_S14_concurrent_append \
          t_S15_zom_last_empty t_S16_outbox_cursor t_S16_outbox_malformed t_S17_zom_bg \
          t_S18_zom_config t_S19_agent_prompt_seed t_S20_widget_always_cold_start t_S21_resource_idempotent \

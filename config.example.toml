@@ -126,6 +126,12 @@ repeatFailureThreshold = 3
 autoTitle = "idle"
 autoTitleIdleMinutes = 54
 
+# Point the extension loader at a working tree instead of the installed mirror,
+# so an edited extension takes effect on the next reload without running the
+# installer. A version that fails to load rolls back to the last one that
+# worked; the failed bytes stay in <dataDir>/ext-good/<name>.broken.
+# devPath = "~/Projects/wez-ai/zsh-opencode-mini"
+
 [recipes]
 # Declarative model calls fired from shell events, evaluated by the opencode
 # side. Each recipe is a named table; the name becomes the tool name

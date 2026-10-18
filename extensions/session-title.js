@@ -16,8 +16,11 @@
 // (session.update with an empty title), so the name comes from the model that
 // already knows how to name sessions.
 
-const DEFAULT_IDLE_MINUTES = 54
 const KEEP_MS = 7 * 24 * 3600 * 1000
+// The clock is written at most this often per process. Every request writing
+// it costs a synchronous write-and-rename and lets two servers fight over the
+// file; a minute of staleness cannot change a 54-minute decision.
+const WRITE_EVERY_MS = 60_000
 
 export default {
   id: "zom-session-title",
@@ -30,15 +33,21 @@ export default {
     const cfg = host.config ?? {}
     const mode = String(cfg.autoTitle ?? "idle").toLowerCase()
     if (mode === "off") return
-    const minutes = Number.isFinite(cfg.autoTitleIdleMinutes) && cfg.autoTitleIdleMinutes > 0
-      ? cfg.autoTitleIdleMinutes
-      : DEFAULT_IDLE_MINUTES
+    // The host fills the documented default; a missing value means the host is
+    // older than this extension. Say so instead of holding a second copy of
+    // the number here.
+    const minutes = Number(cfg.autoTitleIdleMinutes)
+    if (!(minutes > 0)) {
+      host.report?.("autoTitleIdleMinutes missing — the host is older than this extension")
+      return
+    }
     const idleMs = minutes * 60_000
 
     const state = store.get() ?? {}
     const last = state.last ?? {} // sessionID -> timestamp of its previous request
     const renamed = state.renamed ?? {} // sessionID -> timestamp of the last regeneration
 
+    let lastWrite = 0
     const save = (now) => {
       for (const map of [last, renamed]) {
         for (const [key, ts] of Object.entries(map)) {
@@ -55,9 +64,13 @@ export default {
       const now = Date.now()
       const previous = last[id]
       last[id] = now
-      // Persist the clock on every request: a server restart that lost it would
-      // read the first prompt as "new session" and never notice the silence.
-      save(now)
+      // Persist the clock, but not on every request: a restart that lost it
+      // would read the next prompt as a new session and never notice the
+      // silence, so it has to land — just not thousands of times an hour.
+      if (now - lastWrite > WRITE_EVERY_MS) {
+        lastWrite = now
+        save(now)
+      }
       // First sighting seeds the clock: the opening message is already covered
       // by the server's own initial title.
       if (previous === undefined || now - previous < idleMs) return
@@ -70,7 +83,7 @@ export default {
       const run = async () => {
         // An empty title is the "regenerate from history" path, the same
         // semantics as the HTTP endpoint (session.update).
-        await ctx.session.update({ sessionID: id, title: "" })
+        await host.session.retitle(id, "")
       }
       run().catch((e) => host.report?.(`title regenerate failed: ${e?.message ?? e}`))
     })

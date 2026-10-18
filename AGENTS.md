@@ -13,11 +13,23 @@ companion 插件消费它们（`zom_context`、失败感知、recipe 提示、�
   目录名已被否掉，不要恢复。
 - `extensions/*.js`：纯策略模块。宿主管机制（事件、落盘、报告），扩展只做判断。
   新增扩展不需要改安装器——安装器镜像整个目录（含删除），loader 扫到即加载。
+  加载失败不回滚成默认值：上一份能跑的版本留在 `ext-good/<name>.<hash>.js`，
+  失败的新版本被隔离（同一份 hash 不再重试），坏字节存 `<name>.broken`，错误经
+  context 钩子注入 mini，让它自己修。`[companion] devPath` 让 loader 直接读工作区的
+  `extensions/`，改完下次重载生效，不用跑安装器。
+  扩展拿到的 ctx 只有 `session.hook`；事件是只读副本（system 与 messages 冻结），
+  唯一写入口是 `host.inject(event, text)`（进会话尾部，不碰缓存前缀）。context
+  钩子只收到 `event.agent === shell.agent` 的请求——这是宿主的门，不是扩展的自觉。
 - `agent.example.md`：agent 提示词模板，安装时只在 `<配置目录>/agent.md` 缺失时落地一次；
   运行读的是用户那份，不是仓库这份。agent 本身由 `companion.js` 在 setup 里注册。
 - `config.example.toml`：逐键注释的配置模板，是配置面的权威文档。
 
 ## 不变量
+
+- 宿主只提供能力，扩展只做判断。`companion.js` 里可以出现 hook 注册、文件解析、存储、上报、
+  工具注册这类「怎么做」；凡是「什么时候」「什么条件」「什么文案」都属于扩展，写回
+  `extensions/`。扩展表达不了的时候，往宿主补**能力**（一条解析好的记录、一个事件），
+  不补策略分支。回滚与加载是唯一必须留在宿主的东西——扩展没法回滚自己。
 
 - 双侧解析同一份 `config.toml`，都用 python `tomllib`（`__zom_python()` 挑解释器），
   不引入第二种 TOML 方言。

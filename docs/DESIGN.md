@@ -22,9 +22,9 @@ never touches the prompt. Uninstall = delete the source line.
 
 ```text
   config: ~/.config/zsh-opencode-mini/config.toml
-          "shell" section -> plugin.zsh (jq)   |   "companion"+"recipes" sections -> zom-companion.js
+          "shell" section -> plugin.zsh (jq)   |   "companion"+"recipes" sections -> companion.js
 
-┌─ zsh side (plugin.zsh) ─────────────┐     ┌─ opencode side (zom-companion.js) ──┐
+┌─ zsh side (plugin.zsh) ─────────────┐     ┌─ opencode side (companion.js) ──────┐
 │                                     │     │                                     │
 │  preexec ─┐                         │     │  setup(): contract check — loud     │
 │           ├─► history-YYYY-MM.jsonl │◄────┤  fail on plugin-API mismatch        │
@@ -39,7 +39,7 @@ never touches the prompt. Uninstall = delete the source line.
 │   hint line before next prompt)     │     │  the plugin→shell return channel    │
 │                                     │     │                                     │
 │  C-x ─► opencode mini ─────────────────────► inject ONE line; else silence     │
-│           --agent zsh-companion ──────────► registered by companion.js         │
+│           --agent mini (shell.agent) ─────► registered by companion.js         │
 └─────────────────────────────────────┘     └─────────────────────────────────────┘
 ```
 
@@ -169,12 +169,12 @@ commits while it is being written; before tagging, collapse them with
 `git reset --soft <upstream tag>` and a single commit, then push and tag
 `zom-vX.Y.Z.N`. Two commits above the tag means the patch was never collapsed.
 
-The two runtimes also share one data directory. `zom-companion.js` resolves
+The two runtimes also share one data directory. `companion.js` resolves
 `dataDir` the same way `plugin.zsh` does (config value, else XDG), so the
 opencode side reads the store the zsh side writes regardless of how opencode
 was launched.
 
-**API contract exposure.** `zom-companion.js` is platform-coupled — it runs
+**API contract exposure.** `companion.js` is platform-coupled — it runs
 on OpenCode's plugin API. At `setup()` it asserts the running major version
 and probes every ctx surface it uses; any mismatch throws an explicit error
 pointing at the docs page and the date this file was last verified against
@@ -187,8 +187,10 @@ Output capture would be its own opt-in group (repository size, secret
 redaction) — not built.
 
 **Strategy dimensions** (how signals turn into context) live on the opencode
-side, mechanically in `zom-companion.js`: today two built-in signals (fresh
-failure, recent window) plus declarative `recipes` for new ones. Heuristic
+side in `extensions/`: one file per judgement (cache prefix, failure freshness,
+notice wording, recipe gating, idle retitle, retention). `companion.js` keeps
+only the capabilities they call. Today two built-in signals (fresh failure,
+recent window) plus declarative `recipes` for new ones. Heuristic
 tool selection — e.g. wrapping large-output
 commands with [rtk](https://github.com/) — is the same kind of dimension; in
 an environment that already runs a global opencode rtk plugin it applies
@@ -298,7 +300,7 @@ check keeps yours), and the plugin only ever writes inside its own data dir.
 
 Dependencies: `opencode`, `jq`, `base64`.
 
-**Version support**: opencode **latest v2 only**. `zom-companion.js` anchors
+**Version support**: opencode **latest v2 only**. `companion.js` anchors
 its contract at load time (major version + ctx surface probes) and refuses to
 load loudly on mismatch — the plugin API it was verified against is
 documented in the file header (last: 2026-10-02, official `Plugin.define` /

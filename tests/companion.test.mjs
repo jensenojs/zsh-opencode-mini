@@ -22,7 +22,7 @@
 // anchored by assertContract's version check.
 
 import { execSync } from "node:child_process"
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, existsSync, rmSync } from "node:fs"
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, existsSync, rmSync, cpSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 
@@ -72,6 +72,17 @@ const rootSandbox = () => {
   mkdirSync(dataDir, { recursive: true })
   const cfgDir = join(xdgCfg, "zsh-opencode-mini")
   mkdirSync(cfgDir, { recursive: true })
+  // The extensions ship with the plugin; loading the real directory keeps
+  // these tests on the path a user gets rather than a mock of it.
+  cpSync(new URL("../extensions", import.meta.url), join(cfgDir, "extensions"), {
+    recursive: true,
+  })
+  // Same seed the installer writes: the prompt lives in the user's file, and
+  // the host holds no second copy of it.
+  writeFileSync(
+    join(cfgDir, "agent.md"),
+    readFileSync(new URL("../agent.example.md", import.meta.url), "utf8"),
+  )
   return {
     xdgData, dataDir, cfgPath: join(cfgDir, "config.toml"),
     use() {
@@ -95,6 +106,12 @@ const rootSandbox = () => {
     },
   }
 }
+// The chain is host hook + one hook per extension; a test that fired only
+// index 0 would silently stop covering the extensions.
+const fire = (state, event) => {
+  for (const hook of state.contextHooks) hook(event)
+}
+
 const shared = rootSandbox()
 shared.use()
 
@@ -155,14 +172,25 @@ function makeCtx({ version = "2.0.21", omit = [] } = {}) {
   const has = (s) => !omit.includes(s)
   const ctx = {
     app: { version },
+    // Registration surfaces are async in the real runtime (they resolve after
+    // the registry is written). The mocks defer by a tick so a host that does
+    // not await them fails these tests instead of passing by accident.
     tool: has("tool")
-      ? { transform(cb) { cb({ add: (t) => state.tools.push(t) }) } }
+      ? {
+          async transform(cb) {
+            await null
+            cb({ add: (t) => state.tools.push(t) })
+          },
+        }
       : undefined,
     session: has("session")
-      ? { hook(name, cb) {
-          if (name !== "context") throw new Error(`unexpected hook ${name}`)
-          state.contextHooks.push(cb)
-        } }
+      ? {
+          async hook(name, cb) {
+            if (name !== "context") throw new Error(`unexpected hook ${name}`)
+            await null
+            state.contextHooks.push(cb)
+          },
+        }
       : undefined,
     storage: has("storage")
       ? {
@@ -172,7 +200,8 @@ function makeCtx({ version = "2.0.21", omit = [] } = {}) {
       : undefined,
     agent: has("agent")
       ? {
-          transform(cb) {
+          async transform(cb) {
+            await null
             cb({
               get: (id) => state.agents[id],
               update: (id, fn) => {
@@ -208,6 +237,15 @@ function makeCtx({ version = "2.0.21", omit = [] } = {}) {
 
 const contextEvent = () => ({ system: [], messages: [], agent: "mini" })
 
+// Injections belong to the conversation tail. Reading the two places through
+// one accessor made "landed in the cached prefix" indistinguishable from
+// "landed correctly", so they are kept apart: tailTexts is what an assertion
+// inspects, prefixTexts is what a regression check inspects.
+const tailTexts = (ev) =>
+  (ev.messages ?? []).flatMap((m) => (m.content ?? []).map((p) => p.text))
+const prefixTexts = (ev) => (ev.system ?? []).map((p) => p.text)
+const injected = tailTexts // historical name at call sites below
+
 const readOutbox = (dataDir) =>
   existsSync(join(dataDir, "outbox.jsonl"))
     ? readFileSync(join(dataDir, "outbox.jsonl"), "utf8").trim().split("\n").filter(Boolean).map(JSON.parse)
@@ -221,16 +259,20 @@ try {
   state.tools.length === 1 && state.tools[0].name === "zom_context"
     ? ok("v2 loads")
     : bad("v2 loads", `tools=${JSON.stringify(state.tools.map(t => t.name))}`)
-  state.contextHooks.length === 1
+  // The mock refuses any hook name but "context", so the count is the only
+  // thing left to check: at least the host's own hook must be registered.
+  state.contextHooks.length >= 1
     ? ok("context hook registered")
     : bad("context hook registered", `hooks=${state.contextHooks.length}`)
-  ok("tool registered")
+  state.tools.some((t) => t.name === "zom_context")
+    ? ok("tool registered")
+    : bad("tool registered", JSON.stringify(state.tools.map((t) => t.name)))
 
   // 1b. the agent is seeded by the plugin, not by a markdown file in the host
   // config dir; personal taste is appended from the plugin's own config dir.
   const seeded = state.agents["mini"]
   seeded && seeded.mode === "primary" && seeded.hidden === true &&
-  seeded.system.includes("You run inside the user's terminal")
+  seeded.system.includes("You are summoned")
     ? ok("agent seeded at load")
     : bad("agent seeded at load", JSON.stringify(seeded))
 
@@ -243,6 +285,22 @@ try {
     : bad("agent.md is the prompt", JSON.stringify(reloaded.state.agents["mini"].system))
   rmSync(promptFile, { force: true })
 
+  // A deleted prompt is a visible state, not a silent fallback to a copy the
+  // host kept: the agent registers with no brief and the problem says why.
+  const missing = makeCtx()
+  await plugin.setup(missing.ctx)
+  const missingAgent = missing.state.agents["mini"]
+  const missingEv = { system: [], messages: [], agent: "mini" }
+  for (const hook of missing.state.contextHooks) hook(missingEv)
+  const missingText = missingEv.messages.map((m) => m.content.map((p) => p.text).join("")).join("\n")
+  missingAgent.system === "" && missingText.includes("agent prompt")
+    ? ok("a missing agent.md is visible, not papered over")
+    : bad("a missing agent.md is visible, not papered over", JSON.stringify({ system: missingAgent.system, missingText }))
+  writeFileSync(
+    promptFile,
+    readFileSync(new URL("../agent.example.md", import.meta.url), "utf8"),
+  )
+
   // 1c. the agent id is configuration, not a constant: shell.agent renames it,
   // and the same value must both register the agent and gate injection.
   shared.write({ shell: { agent: "renamed-companion" }, companion: { failureTtlSeconds: TTL } })
@@ -254,29 +312,30 @@ try {
     : bad("shell.agent names the agent", JSON.stringify(Object.keys(renamed.state.agents)))
   signal(now - 30)
   const oldName = { system: [], messages: [], agent: "mini" }
-  renamed.state.contextHooks[0](oldName)
+  fire(renamed.state, oldName)
   const newName = { system: [], messages: [], agent: "renamed-companion" }
-  renamed.state.contextHooks[0](newName)
-  oldName.system.length === 0 && newName.system.length === 1
+  fire(renamed.state, newName)
+  tailTexts(oldName).length === 0 && tailTexts(newName).length === 1
     ? ok("shell.agent gates injection")
-    : bad("shell.agent gates injection", `old=${oldName.system.length} new=${newName.system.length}`)
+    : bad("shell.agent gates injection", `old=${tailTexts(oldName).length} new=${tailTexts(newName).length}`)
   rmSync(shared.cfgPath, { force: true })
 
   // 2. fresh failure -> injected
   signal(now - 30)
   const ev = contextEvent()
-  state.contextHooks[0](ev)
-  ev.system.length === 1 && ev.system[0].text.includes("cargo build --release")
+  fire(state, ev)
+  tailTexts(ev).length === 1 && tailTexts(ev)[0].includes("cargo build --release") &&
+  prefixTexts(ev).length === 0
     ? ok("fresh failure injected")
-    : bad("fresh failure injected", JSON.stringify(ev.system))
+    : bad("fresh failure injected", JSON.stringify(tailTexts(ev)))
 
   // 3. stale failure -> silent (lazy-loading contract)
   signal(now - TTL * 2)
   const ev2 = contextEvent()
-  state.contextHooks[0](ev2)
-  ev2.system.length === 0
+  fire(state, ev2)
+  tailTexts(ev2).length === 0 && prefixTexts(ev2).length === 0
     ? ok("stale failure silent")
-    : bad("stale failure silent", JSON.stringify(ev2.system))
+    : bad("stale failure silent", JSON.stringify(tailTexts(ev2)))
 
   // 4. V3 ctx -> loud refusal
   try {
@@ -308,7 +367,10 @@ try {
     clean()
   }
 
-  // 6. config validation: unknown on / deliver / broken jsonc / bad model
+  // 6. config validation: the recipes extension owns the recipe schema now.
+  //    A bad table must not take the plugin down: the extension refuses to
+  //    wire anything and says why through the problem channel. A broken
+  //    config document is still a load-time failure (nobody can read it).
   {
     const cases = [
       ["unknown on", `{"recipes":{"x":{"on":"cron","model":"p/m","prompt":"p","deliver":"outbox"}}}`, "unknown on value"],
@@ -319,21 +381,34 @@ try {
       ["bad model", `{"recipes":{"x":{"on":"failure","model":"nomatch","prompt":"p","deliver":"outbox"}}}`, "provider/model-id"],
       ["bad exitFilter", `{"recipes":{"x":{"on":"failure","model":"p/m","prompt":"p","deliver":"outbox","exitFilter":["1"]}}}`, "array of integers"],
       ["bad name", `{"recipes":{"bad name!":{"on":"failure","model":"p/m","prompt":"p","deliver":"outbox"}}}`, "recipe name"],
-      ["broken jsonc", `{ broken`, "failed to parse"],
     ]
     let allOk = true
     const whys = []
     for (const [name, jsonc, needle] of cases) {
       const sb = rootSandbox(); sb.use(); sb.write(jsonc)
-      try {
-        const c = await plugin.setup(makeCtx().ctx)
-        c() // must not leak a watcher when setup wrongly succeeds
-        allOk = false; whys.push(`${name}: no throw`)
-      } catch (e) {
-        if (!String(e.message).includes(needle)) { allOk = false; whys.push(`${name}: ${e.message}`) }
+      const { ctx, state } = makeCtx()
+      const clean = await plugin.setup(ctx)
+      const ev = { system: [], messages: [], agent: "mini" }
+      fire(state, ev)
+      const said = tailTexts(ev).join("\n")
+      const tool = state.tools.find((t) => String(t.name).startsWith("zom_recipe_"))
+      if (!said.includes(needle) || tool) {
+        allOk = false
+        whys.push(`${name}: tail=${JSON.stringify(said.slice(0, 120))} tool=${tool?.name}`)
+      }
+      clean()
+    }
+    const sb = rootSandbox(); sb.use(); sb.write("{ broken")
+    try {
+      const c = await plugin.setup(makeCtx().ctx)
+      c()
+      allOk = false; whys.push("broken jsonc: no throw")
+    } catch (e) {
+      if (!String(e.message).includes("failed to parse")) {
+        allOk = false; whys.push(`broken jsonc: ${e.message}`)
       }
     }
-    allOk ? ok("config validation loud") : bad("config validation loud", whys.join(" | "))
+    allOk ? ok("config validation loud, scoped to recipes") : bad("config validation loud, scoped to recipes", whys.join(" | "))
   }
 
   // 7. probe gating: recipes configured but generate/storage missing -> refuse;
@@ -413,9 +488,36 @@ try {
     await fireViaWatcher(sb.dataDir, { ts: "x", epoch: now, cwd: "/w", exit: 1, cmd: "x" }, () => state.generateCalls.length, 1)
     atomicSignal(sb.dataDir, { ts: "x", epoch: now + 1, cwd: "/w", exit: 2, cmd: "y" })
     await new Promise((r) => setTimeout(r, 400))
-    state.generateCalls.length === 1 && Object.keys(state.storage).some((k) => k.startsWith("zom/rate/hint/"))
+    // The counter now lives in the extension's own kv file beside the other
+    // shell data (host.kv), not in the plugin ctx storage: one durable store,
+    // no second surface that can silently return undefined.
+    const kvPath = join(sb.dataDir, "recipes.kv.json")
+    const kv = existsSync(kvPath) ? JSON.parse(readFileSync(kvPath, "utf8")) : {}
+    state.generateCalls.length === 1 && Object.keys(kv).some((k) => k.startsWith("zom/rate/hint"))
       ? ok("ratePerHour gates via storage")
-      : bad("ratePerHour gates via storage", `calls=${state.generateCalls.length} keys=${JSON.stringify(Object.keys(state.storage))}`)
+      : bad("ratePerHour gates via storage", `calls=${state.generateCalls.length} keys=${JSON.stringify(Object.keys(kv))}`)
+    clean()
+  }
+
+  // 10b. A rate gate whose counter cannot be written must not fire anyway:
+  //      the limit is off, and "off" is said out loud instead of looking
+  //      enforced while generating on every event.
+  {
+    const sb = rootSandbox(); sb.use()
+    sb.write(`{"recipes":{"hint":{"on":"failure","model":"p/m","prompt":"p","deliver":"outbox","ratePerHour":1}}}`)
+    const { ctx, state } = makeCtx()
+    const clean = await plugin.setup(ctx)
+    // A directory where the counter file should be: the gate reads as empty
+    // (fine) but cannot persist its count, which is exactly the case under test.
+    mkdirSync(join(sb.dataDir, "recipes.kv.json"), { recursive: true })
+    atomicSignal(sb.dataDir, { ts: "x", epoch: now, cwd: "/w", exit: 1, cmd: "x" })
+    await new Promise((r) => setTimeout(r, 400))
+    const hookEvent = { system: [], messages: [], agent: "mini" }
+    state.contextHooks.forEach((h) => h(hookEvent))
+    const said = tailTexts(hookEvent).join("\n")
+    state.generateCalls.length === 0 && said.includes("rate gate could not be written")
+      ? ok("an unpersistable rate gate is reported, not ignored")
+      : bad("an unpersistable rate gate is reported, not ignored", `calls=${state.generateCalls.length} tail=${JSON.stringify(said)}`)
     clean()
   }
 
@@ -430,17 +532,18 @@ try {
     const gotHook = await fireViaWatcher(sb.dataDir, { ts: "x", epoch: now, cwd: "/w", exit: 1, cmd: "x" }, () => state.generateCalls.length, 1)
       && readOutbox(sb.dataDir).length === 0
     const evx = contextEvent()
-    state.contextHooks[0](evx)
-    const line = evx.system.find((s) => s.text.startsWith("[zom:hint]"))
-    gotHook && line && line.text.includes("hint for p")
+    fire(state, evx)
+    const line =
+    prefixTexts(evx).length === 0 ? tailTexts(evx).find((t) => t.startsWith("[zom:hint]")) : undefined
+    gotHook && line && line.includes("hint for p")
       ? ok("next-session injects tagged output")
-      : bad("next-session injects tagged output", JSON.stringify(evx.system))
+      : bad("next-session injects tagged output", JSON.stringify(tailTexts(evx)))
     await new Promise((r) => setTimeout(r, 1200))
     const evy = contextEvent()
-    state.contextHooks[0](evy)
-    !evy.system.some((s) => s.text.startsWith("[zom:"))
+    fire(state, evy)
+    !tailTexts(evy).some((t) => t.startsWith("[zom:"))
       ? ok("next-session output expires after ttl")
-      : bad("next-session output expires after ttl", JSON.stringify(evy.system))
+      : bad("next-session output expires after ttl", JSON.stringify(tailTexts(evy)))
     clean()
   }
 
@@ -570,20 +673,20 @@ try {
       JSON.stringify({ ts: now - 10, kind: "history-oversized", text: "history-2026-10.jsonl is over 10 MB" }) + "\n" +
       `{"kind":"torn","text":"never completed`)
     const ev = contextEvent()
-    state.contextHooks[0](ev)
-    const line = ev.system.find((s) => s.text.includes("shell-side notices"))
-    const count = line ? (line.text.match(/hook-failure/g) || []).length : 0
-    line && count === 1 && line.text.includes("history-oversized") && !line.text.includes("torn")
+    fire(state, ev)
+    const notice = tailTexts(ev).find((t) => t.includes("shell-side notices")) ?? ""
+    const count = (notice.match(/hook-failure/g) || []).length
+    notice && count === 1 && notice.includes("history-oversized") && !notice.includes("torn")
       ? ok("notices injected deduped")
-      : bad("notices injected deduped", JSON.stringify(ev.system))
+      : bad("notices injected deduped", JSON.stringify(tailTexts(ev)))
     readFileSync(notices, "utf8") === ""
       ? ok("notices file self-cleans after drain")
       : bad("notices file self-cleans after drain", readFileSync(notices, "utf8"))
     const ev2 = contextEvent()
-    state.contextHooks[0](ev2)
-    !ev2.system.some((s) => s.text.includes("shell-side notices"))
+    fire(state, ev2)
+    !tailTexts(ev2).some((t) => t.includes("shell-side notices"))
       ? ok("notices drained once")
-      : bad("notices drained once", JSON.stringify(ev2.system))
+      : bad("notices drained once", JSON.stringify(tailTexts(ev2)))
     clean()
   }
 
@@ -602,21 +705,21 @@ try {
       ? ok("injection: outbox record still written")
       : bad("injection: outbox record still written", JSON.stringify(rec))
     const ev = contextEvent()
-    state.contextHooks[0](ev)
-    const line = ev.system.find((s) => s.text.includes("background session"))
-    line && line.text.includes("ses_zom-bg-inj") && line.text.includes("/proj")
+    fire(state, ev)
+    const line = tailTexts(ev).find((t) => t.includes("background session"))
+    line && line.includes("ses_zom-bg-inj") && line.includes("/proj")
       ? ok("injection: hook delivers sid+cwd once")
-      : bad("injection: hook delivers sid+cwd once", JSON.stringify(ev.system))
+      : bad("injection: hook delivers sid+cwd once", JSON.stringify(tailTexts(ev)))
     // handshake: the drain on the zsh side skips this sid for the TTL window
     const marker = JSON.parse(readFileSync(join(sb.dataDir, "bg-injected.json"), "utf8"))
     typeof marker["ses_zom-bg-inj"] === "number"
       ? ok("injection: bg-injected.json marker written")
       : bad("injection: bg-injected.json marker written", JSON.stringify(marker))
     const ev2 = contextEvent()
-    state.contextHooks[0](ev2)
-    !ev2.system.some((s) => s.text.includes("background session"))
+    fire(state, ev2)
+    !tailTexts(ev2).some((t) => t.includes("background session"))
       ? ok("injection: consumed after one hook")
-      : bad("injection: consumed after one hook", JSON.stringify(ev2.system))
+      : bad("injection: consumed after one hook", JSON.stringify(tailTexts(ev2)))
     // failed path names the error in the injection (fresh sid — the notify
     // set dedupes per sid, ses_zom-bg-inj is already consumed)
     writeFileSync(join(sb.dataDir, "bg.jsonl"),
@@ -625,11 +728,11 @@ try {
     state.outboxFeeds[0].push({ type: "session.execution.failed", data: { sessionID: "ses_zom-bg-fail" } })
     await waitFor(() => readOutbox(sb.dataDir).length === 2)
     const ev3 = contextEvent()
-    state.contextHooks[0](ev3)
-    const failLine = ev3.system.find((s) => s.text.includes("ses_zom-bg-fail"))
-    failLine && failLine.text.includes("with error")
+    fire(state, ev3)
+    const failLine = tailTexts(ev3).find((t) => t.includes("ses_zom-bg-fail"))
+    failLine && failLine.includes("with error")
       ? ok("injection: failed session flagged with error")
-      : bad("injection: failed session flagged with error", JSON.stringify(ev3.system))
+      : bad("injection: failed session flagged with error", JSON.stringify(tailTexts(ev3)))
     clean()
   }
 
@@ -722,17 +825,17 @@ try {
     const { ctx, state } = makeCtx()
     const clean = await plugin.setup(ctx)
     const evz = contextEvent()
-    state.contextHooks[0](evz)
-    evz.system.length === 0
+    fire(state, evz)
+    tailTexts(evz).length === 0
       ? ok("no signal no injection")
-      : bad("no signal no injection", JSON.stringify(evz.system))
+      : bad("no signal no injection", JSON.stringify(tailTexts(evz)))
     clean()
   }
 
-  // 17. outbox rotation: past 1MB the append keeps the last ≤64KB of complete
-  //     lines and drops the ancient prefix (no backup file). Below the cap
-  //     nothing is dropped; the zsh byte cursor recovers via its
-  //     cursor>size → restart-from-zero rule, so replaying the tail is fine.
+  // 17. outbox append is a pure append: rotation belongs to the state-watch
+  //     scanner (covered in extensions.test.mjs), because doing it here reads
+  //     the whole file per record and races another process appending to the
+  //     inode being replaced. A past-cap file must still accept a record.
   {
     const sb = rootSandbox(); sb.use()
     sb.write(`{"recipes":{"explain":{"on":"manual","model":"p/m","prompt":"explain {cmd}","deliver":"outbox"}}}`)
@@ -740,50 +843,31 @@ try {
     const clean = await plugin.setup(ctx)
     const tool = state.tools.find((t) => t.name === "zom_recipe_explain")
     const outbox = join(sb.dataDir, "outbox.jsonl")
-    // uniform-length pad records keep the retained-tail math exact
-    const padLine = (i) =>
-      JSON.stringify({ n: String(i).padStart(6, "0"), kind: "pad", text: `pad-${String(i).padStart(6, "0")}-` + "x".repeat(60) }) + "\n"
-    const L = padLine(0).length
+    const padLine = (i) => JSON.stringify({ n: String(i).padStart(6, "0"), kind: "pad" }) + "\n"
 
-    // below the cap: append only, nothing dropped
     writeFileSync(outbox, padLine(0) + padLine(1))
     await tool.execute({ cmd: "small append" })
     const small = readOutbox(sb.dataDir)
-    small.length === 3 && small[0].kind === "pad" && small[2].text === "hint for explain small append"
-      ? ok("rotation below cap keeps everything")
-      : bad("rotation below cap keeps everything", JSON.stringify(small.map((r) => r.kind ?? r.recipe)))
+    small.length === 3 && small[2].text === "hint for explain small append"
+      ? ok("append below cap keeps everything")
+      : bad("append below cap keeps everything", JSON.stringify(small.map((r) => r.kind ?? r.recipe)))
 
-    // over the cap: seed >1MB of complete pad lines plus a torn trailing
-    // fragment (a crashed append's leftover); the new append must rotate,
-    // keep only the last ≤64KB of complete lines, and land its own record
     const N = 12000
     let seed = ""
     for (let i = 0; i < N; i++) seed += padLine(i)
-    seed += `{"kind":"torn","text":"never completed`
-    if (seed.length <= 1_000_000) bad("rotation seed size", `seed only ${seed.length} bytes`)
     writeFileSync(outbox, seed)
-    await tool.execute({ cmd: "rotate me" })
-    const raw = readFileSync(outbox, "utf8")
-    let parseOk = true
-    const recs = []
-    for (const l of raw.split("\n").filter(Boolean)) {
-      try { recs.push(JSON.parse(l)) } catch { parseOk = false }
-    }
-    const pads = recs.filter((r) => r.kind === "pad")
-    const ids = pads.map((r) => Number(r.n))
+    const before = statSync(outbox).size
+    await tool.execute({ cmd: "past cap" })
+    const after = statSync(outbox).size
+    const recs = readOutbox(sb.dataDir)
     const last = recs[recs.length - 1]
-    const padBytes = pads.length * L
-    // retained pads are the maximal suffix fitting 64KB at line granularity
-    const tailKept = padBytes <= 64 * 1024 && padBytes > 64 * 1024 - L
-    parseOk && raw.endsWith("\n") && !raw.includes("torn")
-      && ids.every((v, i) => v === ids[0] + i) && ids[ids.length - 1] === N - 1
-      && tailKept
-      && last?.recipe === "explain" && last?.text === "hint for explain rotate me"
-      && !existsSync(`${outbox}.tmp`)
-      ? ok("rotation keeps aligned tail, drops prefix and torn fragment")
-      : bad("rotation keeps aligned tail, drops prefix and torn fragment",
-          JSON.stringify({ parseOk, endsNl: raw.endsWith("\n"), torn: raw.includes("torn"),
-            firstId: ids[0], lastId: ids[ids.length - 1], padBytes, last }))
+    // rotated-away prefix would show up as a missing n=0 pad record
+    const keptPrefix = recs.some((r) => r.kind === "pad" && r.n === "000000")
+    after > before && keptPrefix && last?.recipe === "explain"
+      && last?.text === "hint for explain past cap" && !existsSync(`${outbox}.tmp`)
+      ? ok("append past cap still lands, no rotation in the hot path")
+      : bad("append past cap still lands, no rotation in the hot path",
+          JSON.stringify({ before, after, last }))
     clean()
   }
 
@@ -810,8 +894,8 @@ try {
       const { ctx, state } = makeCtx()
       await plugin.setup(ctx)
       const ev = contextEvent()
-      state.contextHooks[0](ev)
-      return ev.system.filter((s) => String(s.text).includes("failed")).length
+      fire(state, ev)
+      return tailTexts(ev).filter((t) => String(t).includes("failed")).length
     }
 
     // no summon record: cannot tell which shell is asking -> global-latest
@@ -888,6 +972,123 @@ try {
       ? ok("recent without summon record keeps recency order")
       : bad("recent without summon record keeps recency order", JSON.stringify(plain))
     renameSync(spawnsPath + ".bak", spawnsPath)
+  }
+
+  // 20. usage baseline: the real path is event -> dispatch -> disk -> seed in
+  //     a fresh module. The map is module scope, so "fresh module" needs a
+  //     child process; running it in-process would read the map and hide a
+  //     broken persist or a broken seed behind leftover state.
+  {
+    const sb = rootSandbox()
+    sb.use()
+    const usageEvent = (input, read) => ({
+      type: "session.usage.updated",
+      data: { sessionID: "ses_u", tokens: { input, cache: { read } } },
+    })
+    const settle = () => new Promise((r) => setTimeout(r, 40))
+
+    const { ctx, state } = makeCtx()
+    await plugin.setup(ctx)
+    state.outboxFeeds[0].push(usageEvent(1000, 100))
+    await settle()
+    state.outboxFeeds[0].push(usageEvent(1500, 200))
+    await settle()
+
+    let wrote = null
+    try { wrote = JSON.parse(readFileSync(join(sb.dataDir, "usage-baseline.json"), "utf8")) } catch {}
+    wrote?.ses_u?.input === 1500
+      ? ok("usage baseline written from the event stream")
+      : bad("usage baseline written from the event stream", JSON.stringify(wrote))
+
+    // A listener exists only so the delta has somewhere observable to land.
+    writeFileSync(
+      join(sb.cfgPath, "..", "extensions", "probe-usage.js"),
+      `import { appendFileSync } from "node:fs"
+export default {
+  id: "probe-usage",
+  setup(ctx, host) {
+    host.onUsageDelta((d) => appendFileSync(host.dataDir + "/deltas.log", JSON.stringify(d) + "\\n"))
+  },
+}
+`,
+    )
+    const companionHref = new URL("../companion.js", import.meta.url).href
+    const probe = join(sb.dataDir, "probe.mjs")
+    writeFileSync(
+      probe,
+      `const plugin = (await import(${JSON.stringify(companionHref)})).default
+const queue = []
+let wake = () => {}
+const ctx = {
+  app: { version: "2.0.21" },
+  tool: { transform(cb) { cb({ add() {} }) } },
+  session: { hook() {} },
+  storage: { get: async () => undefined, set: async () => {} },
+  agent: { transform(cb) { cb({ get: () => undefined, update() {} }) } },
+  event: { subscribe() { return (async function* () {
+    for (;;) {
+      if (!queue.length) await new Promise((r) => { wake = r })
+      yield queue.shift()
+    }
+  })() } },
+}
+await plugin.setup(ctx)
+queue.push({ type: "session.usage.updated", data: { sessionID: "ses_u", tokens: { input: 1550, cache: { read: 260 } } } })
+wake()
+await new Promise((r) => setTimeout(r, 50))
+process.exit(0)
+`,
+    )
+    execSync(`"${process.execPath}" "${probe}"`, { env: process.env, stdio: "pipe" })
+    let delta = null
+    try {
+      delta = JSON.parse(readFileSync(join(sb.dataDir, "deltas.log"), "utf8").trim().split("\n").pop())
+    } catch {}
+    delta?.sid === "ses_u" && delta?.dInput === 50 && delta?.dRead === 60
+      ? ok("fresh module seeds the baseline from disk")
+      : bad("fresh module seeds the baseline from disk", JSON.stringify(delta))
+  }
+
+  // 21. A reload runs setup again in the same process. Listeners from the
+  //     previous generation must be gone, or one event fires two handlers.
+  {
+    const sb = rootSandbox()
+    sb.use()
+    mkdirSync(join(sb.cfgPath, "..", "extensions"), { recursive: true })
+    writeFileSync(
+      join(sb.cfgPath, "..", "extensions", "count-delta.js"),
+      `import { appendFileSync } from "node:fs"
+export default {
+  id: "count-delta",
+  setup(ctx, host) {
+    host.onUsageDelta(() => appendFileSync(host.dataDir + "/fires.log", "x"))
+  },
+}
+`,
+    )
+    const usageEvent = (input, read) => ({
+      type: "session.usage.updated",
+      data: { sessionID: "ses_r", tokens: { input, cache: { read } } },
+    })
+    const settle = () => new Promise((r) => setTimeout(r, 60))
+    const first = makeCtx()
+    await plugin.setup(first.ctx)
+    const second = makeCtx()
+    await plugin.setup(second.ctx)
+    first.state.outboxFeeds[0].push(usageEvent(1000, 100))
+    await settle()
+    second.state.outboxFeeds[0].push(usageEvent(1200, 150))
+    await settle()
+    let fires = ""
+    try {
+      fires = readFileSync(join(sb.dataDir, "fires.log"), "utf8")
+    } catch {}
+    // The first sample only records a baseline; the second one is the delta.
+    // One line = one live listener. Two = the reloaded generation is still
+    // subscribed alongside the new one.
+    fires.length === 1
+      ? ok("a reload does not stack listeners")
+      : bad("a reload does not stack listeners", `fires=${fires.length}`)
   }
 } catch (e) {
   bad("suite crashed", e.stack || e.message)
