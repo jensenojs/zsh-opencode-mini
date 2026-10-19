@@ -1102,7 +1102,21 @@ __zom_launch_mini() {
   fi
   local -a ZOM_ARGV
   __zom_mini_argv "$@"
-  "$ZOM_BINARY" "${ZOM_ARGV[@]}"
+  local bin=$ZOM_BINARY
+  [[ "$bin" != /* ]] && bin=${commands[$bin]:-$bin}
+  "$bin" "${ZOM_ARGV[@]}"
+  local rc=$?
+  # 崩溃（abort/kill/segv）是最新的产物坏了的信号：签名对不上、资产不完整、
+  # 构建本身挂了。安装脚本会把上一代留在 .prev；这里换回来一次，坏的那代
+  # 改名 .bad 留证。130（Ctrl-C）和 1（配置错）不算——前者是用户中断，
+  # 后者回滚也救不回来。
+  if (( rc == 134 || rc == 137 || rc == 139 )) && [[ -f "$bin.prev" ]]; then
+    mv -f "$bin" "$bin.bad"
+    mv -f "$bin.prev" "$bin"
+    print -u2 -- "zsh-opencode-mini: $bin exited with $rc — restored the previous binary"
+    print -u2 -- "  broken build kept as $bin.bad"
+  fi
+  return $rc
 }
 
 # Shell-side notices. Some degradations produce no output at all (a hook that

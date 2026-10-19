@@ -56,6 +56,10 @@
 #     S39 hook registration: file-mode scripts dispatch phantom preexecs per
 #         line (empty $1) — the plugin ignores them, the recorded cmd
 #         survives; hook arrays are idempotent under double sourcing
+#     S41 crash restore: abort/kill/segv hands the launch back to the
+#         installer's .prev copy once (bad build kept as .bad); rc=1 does not
+#     S42 install probe: the downloaded artifact must answer --version with a
+#         -zom- string before it replaces the installed binary
 #
 #   NOT automated (declared boundary): the real keystroke→ZLE→widget→zle -I
 #   chain requires a live interactive shell; zsh's hook invocation semantics
@@ -1249,6 +1253,91 @@ EOFCURL
   cleanup
 }
 
+# S41: a crash right after an install (abort/kill/segv) is the signature of a
+# bad artifact or a Taskgated signature mismatch. The installer leaves the
+# previous generation in .prev; the launch path restores it once and keeps the
+# broken build as .bad. Ordinary failures (rc=1) must not swap anything.
+t_S41_crash_restore() {
+  sandbox
+  mkdir -p "$TD/bin"
+  local bin="$TD/bin/opencode-zom"
+  cat > "$bin" <<'EOFBIN'
+#!/bin/sh
+if [ "$1" = mini ] && [ "$2" = --help ]; then
+  printf '  --agent string\n  --replay-limit integer\n  --replay\n  --no-replay\n  --prefill string\n  --leader string\n'
+  exit 0
+fi
+exit ${STUB_EXIT:-137}
+EOFBIN
+  print -r -- '#!/bin/sh
+# restored-ok' > "$bin.prev"
+  chmod +x "$bin" "$bin.prev"
+  write_config <<CFG
+{"shell":{"binary":"$bin"}}
+CFG
+  local out
+  out=$(run_zsh '__zom_launch_mini' 2>&1 || true)
+  assert_contains "S41 crash reported"          "$out" "restored the previous binary"
+  assert_contains "S41 previous build restored" "$(cat "$bin")" "restored-ok"
+  assert_file_exists "$bin.bad" "S41 broken build kept"
+  assert_file_missing "$bin.prev" "S41 .prev consumed (one-shot)"
+  # an ordinary failure is not a crash
+  print -r -- '#!/bin/sh
+if [ "$1" = mini ] && [ "$2" = --help ]; then
+  printf "  --agent string\n  --replay-limit integer\n  --replay\n  --no-replay\n  --prefill string\n  --leader string\n"
+  exit 0
+fi
+exit 1' > "$bin"
+  print -r -- '#!/bin/sh
+# stale-prev' > "$bin.prev"
+  chmod +x "$bin" "$bin.prev"
+  out=$(run_zsh '__zom_launch_mini' 2>&1 || true)
+  assert_not_contains "S41 rc=1 does not roll back" "$out" "restored the previous binary"
+  assert_file_exists "$bin.prev" "S41 rc=1 leaves .prev alone"
+  cleanup
+}
+
+# S42: the installer probes the downloaded artifact before replacing the
+# installed one — a broken asset never reaches the launch path. curl is
+# stubbed; the assertions are the install outcome, not the transport.
+t_S42_install_probe() {
+  sandbox
+  mkdir -p "$TD/bin" "$HOME/.local/bin"
+  cat > "$TD/bin/curl" <<'EOFCURL'
+#!/bin/sh
+[ "$1" = "-fsIL" ] && exit 0
+out=
+for a in "$@"; do
+  [ "${prev-}" = "-o" ] && out=$a
+  prev=$a
+done
+printf '%s\n' "$STUB_BODY" > "$out"
+EOFCURL
+  chmod +x "$TD/bin/curl"
+  local installed="$HOME/.local/bin/opencode-zom"
+  print -r -- '#!/bin/sh
+# generation-one' > "$installed"
+  chmod +x "$installed"
+
+  local rc
+  STUB_BODY='#!/bin/sh
+printf "opencode v0.0.0-zom-99\n"' \
+    PATH="$TD/bin:$PATH" bash "$ROOT/scripts/install-zom-binary.sh" >/dev/null 2>&1 || rc=$?
+  rc=${rc:-0}
+  assert_eq "S42 good artifact installs" "$rc" "0"
+  assert_contains "S42 new build in place" "$(cat "$installed")" "zom-99"
+  assert_contains "S42 previous kept as .prev" "$(cat "$installed.prev")" "generation-one"
+
+  print -r -- '#!/bin/sh
+# generation-two' > "$installed"
+  STUB_BODY='#!/bin/sh
+printf "opencode v1.2.3\n"' \
+    PATH="$TD/bin:$PATH" bash "$ROOT/scripts/install-zom-binary.sh" >/dev/null 2>&1 || rc=$?
+  assert_eq "S42 bad artifact rejected" "${rc:-0}" "1"
+  assert_contains "S42 installed build untouched" "$(cat "$installed")" "generation-two"
+  cleanup
+}
+
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S10b_extensions_suite \
@@ -1261,7 +1350,8 @@ for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload
          t_S28_external_hook t_S29_size_sentinel t_S30_notices t_S31_spawn_measurement \
          t_S32_prefill_consumed_once t_S33_hook_stdin_tty t_S34_osc_switch \
          t_S35_stderr_tail t_S36_drain_bg_skip t_S37_stderr_dual_mode \
-         t_S38_failure_tty_scope t_S39_hook_registration t_S40_session_dir; do
+         t_S38_failure_tty_scope t_S39_hook_registration t_S40_session_dir \
+         t_S41_crash_restore t_S42_install_probe; do
   print -r -- "[$t]"
   $t
 done

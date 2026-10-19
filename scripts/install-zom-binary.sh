@@ -39,9 +39,19 @@ mkdir -p "$DEST"
 TMP=$(mktemp)
 curl -fL --progress-bar "$URL" -o "$TMP"
 chmod +x "$TMP"
+# 先跑再换：资产坏了或不是 zom 构建时，已装的二进制保持不动。
+# 换完才发现坏，用户下一次 summon 就是一次崩溃。
+if ! probe=$("$TMP" --version 2>&1) || [[ "$probe" != *-zom-* ]]; then
+  echo "==> downloaded binary failed its version probe; keeping the installed one" >&2
+  echo "    $probe" >&2
+  rm -f "$TMP"
+  exit 1
+fi
 # 必须落新文件再 mv：原地 cp 覆盖已签名二进制（同一 inode 截断重写）会让
 # macOS Taskgated 拿内核缓存的旧签名比对失败，exec 时 SIGKILL (rc=137)。
 # 2026-10-16 实测，mv 换 inode 即愈。
+# 旧版本留一份 .prev：启动期崩溃由插件的 launch 路径换回，只留一代。
+[ -x "$DEST/opencode-zom" ] && mv -f "$DEST/opencode-zom" "$DEST/opencode-zom.prev"
 mv "$TMP" "$DEST/opencode-zom"
 
 echo "==> installed: $DEST/opencode-zom ($("$DEST/opencode-zom" --version 2>/dev/null | head -1))"
