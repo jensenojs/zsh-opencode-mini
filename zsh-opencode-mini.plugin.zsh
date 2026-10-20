@@ -1046,27 +1046,11 @@ __zom_mini_argv() {
   ZOM_ARGV+=("$@")   # caller's extra args, verbatim
 }
 
-# A session's working directory is stored on the session, not derived from the
-# directory the launcher happens to sit in — resuming from elsewhere would keep
-# the old one forever, and every project-shaped thing (AGENTS.md, tilth, tools)
-# would keep describing the wrong tree. The TUI has /cd for this; the summon
-# path has to do the same move up front, through the service the CLI already
-# launched. Best effort: a server that is not up yet (404/timeout) just means
-# the session keeps its directory, never a failed summon.
-__zom_sync_session_dir() {  # <sid>
-  local sid=$1
-  local state=${XDG_STATE_HOME:-$HOME/.local/state}/opencode
-  local file=$state/service-${${ZOM_BINARY:t}#opencode-}.json
-  [[ -r "$file" ]] || return 0
-  local url pw
-  url=$(jq -r '.url // empty' "$file" 2>/dev/null) || return 0
-  pw=$(jq -r '.password // empty' "$file" 2>/dev/null) || return 0
-  [[ -n "$url" && -n "$pw" ]] || return 0
-  curl -fsS -m 1 -o /dev/null -X POST "$url/api/session/$sid/move" \
-    -u "opencode:$pw" -H 'content-type: application/json' \
-    -d "$(jq -Rn --arg d "$PWD" '{directory:$d}')" 2>/dev/null
-  return 0
-}
+# A session's directory is adopted by the CLI from the process cwd at launch:
+# `opencode mini --session <id>` started in another tree moves the session there
+# (verified 2026-10-20: launching from /tmp moved the location to /private/tmp).
+# The plugin only has to exec from the directory the user summoned from — no
+# extra HTTP move, no dependency on the service already being up.
 
 # The single launch path, shared by the keybind widget and the `zom` function.
 # Kept free of ZLE calls so tests can exercise it without a line editor.
@@ -1074,8 +1058,8 @@ __zom_launch_mini() {
   if ! __zom_mini_probe; then
     return 1   # loud: the probe already reported on stderr; do not exec
   fi
-  # The pointer is resolved exactly once per launch: hooks, the cwd sync and
-  # the argv must all see the same id even when the file did not exist yet.
+  # The pointer is resolved exactly once per launch: hooks and the argv must
+  # see the same id even when the file did not exist yet.
   if [[ "$ZOM_RESUME" == main ]]; then
     ZOM_MAIN_SID=$(__zom_main_sid) || {
       print -u2 -- "zsh-opencode-mini: cannot write $ZOM_STATE_DIR/main-session — resuming off for this launch"
@@ -1084,7 +1068,6 @@ __zom_launch_mini() {
   else
     ZOM_MAIN_SID=""
   fi
-  [[ -n "$ZOM_MAIN_SID" ]] && __zom_sync_session_dir "$ZOM_MAIN_SID"
   __zom_run_spawn_hooks mini "$ZOM_MAIN_SID"
   # The summon loop reuses one session; the entry ("▪ oc mini …") and exit
   # ("Session …") splash banners would stamp a fresh pair into scrollback on
@@ -1186,6 +1169,42 @@ __zom_mini_widget() {
 # Scriptable entry point (extra args are forwarded to mini)
 zom() {
   __zom_launch_mini "$@"
+}
+
+# Explicit upgrade: the owner asks, the plugin does the three steps it owns —
+# fast-forward the checkout, re-install the opencode-side parts, reconcile the
+# binary. There is no timer and no start-up check: an upgrade is an act, not a
+# background policy. Every step fails loudly and stops; nothing is half-applied
+# under a stale checkout.
+zom-update() {
+  local src="${${(%):-%x}:A:h}"
+  if ! git -C "$src" rev-parse --git-dir >/dev/null 2>&1; then
+    print -u2 -- "zom-update: $src is not a git checkout"
+    return 1
+  fi
+  if [[ -n "$(git -C "$src" status --porcelain 2>/dev/null)" ]]; then
+    print -u2 -- "zom-update: $src has local changes — commit or stash them first"
+    return 1
+  fi
+  if ! git -C "$src" fetch --quiet origin; then
+    print -u2 -- "zom-update: cannot fetch origin"
+    return 1
+  fi
+  # A diverged checkout is a state to resolve by hand, never to overwrite.
+  if ! git -C "$src" merge --ff-only '@{u}' >/dev/null 2>&1; then
+    print -u2 -- "zom-update: $src cannot fast-forward to @{u} — resolve it by hand"
+    return 1
+  fi
+  print -- "zom-update: $(git -C "$src" log --oneline -1)"
+  source "$src/zsh-opencode-mini.plugin.zsh"
+  local installer="$src/scripts/install-zom-binary.sh"
+  if [[ -x "$installer" ]]; then
+    "$installer" || {
+      print -u2 -- "zom-update: binary install failed"
+      return 1
+    }
+  fi
+  return 0
 }
 
 # Quick ask: hand the most recent failed command straight to `opencode run`,

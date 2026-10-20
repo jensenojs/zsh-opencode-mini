@@ -1227,32 +1227,6 @@ REPRO
   cleanup
 }
 
-# S40: a resumed session is moved to the directory the user summoned from —
-# the session's directory is stored on the session, so a launch from another
-# tree would otherwise keep describing the old one (AGENTS.md, tilth, tools).
-# curl is stubbed; the assertions are the request shape, not the transport.
-t_S40_session_dir() {
-  sandbox
-  export XDG_STATE_HOME="$TD/state"
-  mkdir -p "$XDG_STATE_HOME/opencode" "$TD/bin"
-  print -r -- '{"url":"http://127.0.0.1:9","password":"pw"}' > "$XDG_STATE_HOME/opencode/service-zom.json"
-  cat > "$TD/bin/curl" <<'EOFCURL'
-#!/bin/sh
-printf '%s\n' "$*" >> "$ZOM_MOCK_LOG"
-EOFCURL
-  chmod +x "$TD/bin/curl"
-  PATH="$TD/bin:$MOCKBIN:$PATH" zsh -f -c "source '$PLUGIN'; ZOM_BINARY=opencode-zom; cd /tmp; __zom_sync_session_dir ses_probe"
-  local log; log=$(cat "$ZOM_MOCK_LOG")
-  assert_contains "S40 move targets the session endpoint" "$log" "/api/session/ses_probe/move"
-  assert_contains "S40 move carries basic auth" "$log" "opencode:pw"
-  assert_contains "S40 move sends the summon directory" "$log" '"directory": "/tmp"'
-  : > "$ZOM_MOCK_LOG"
-  rm -f "$XDG_STATE_HOME/opencode/service-zom.json"
-  PATH="$TD/bin:$MOCKBIN:$PATH" zsh -f -c "source '$PLUGIN'; ZOM_BINARY=opencode-zom; __zom_sync_session_dir ses_probe"
-  assert_eq "S40 no service file -> no request" "$(cat "$ZOM_MOCK_LOG")" ""
-  cleanup
-}
-
 # S41: a crash right after an install (abort/kill/segv) is the signature of a
 # bad artifact or a Taskgated signature mismatch. The installer leaves the
 # previous generation in .prev; the launch path restores it once and keeps the
@@ -1338,6 +1312,42 @@ printf "opencode v1.2.3\n"' \
   cleanup
 }
 
+# S43: zom-update is explicit and ordered — clean fast-forward, then the
+# installer. A dirty or diverged checkout stops before anything is replaced.
+t_S43_zom_update() {
+  sandbox
+  local base="$TD/up" remote="$TD/up/remote.git" src="$TD/up/src" other="$TD/up/other"
+  mkdir -p "$base"
+  git init -q --bare -b main "$remote"
+  git clone -q "$remote" "$src" 2>/dev/null
+  mkdir -p "$src/scripts"
+  cp "$ROOT/zsh-opencode-mini.plugin.zsh" "$src/"
+  printf '#!/bin/sh\necho INSTALLER_RAN\n' > "$src/scripts/install-zom-binary.sh"
+  chmod +x "$src/scripts/install-zom-binary.sh"
+  git -C "$src" add -A
+  git -C "$src" -c user.email=a@b -c user.name=a commit -qm init
+  git -C "$src" branch -M main
+  git -C "$src" push -q -u origin main
+
+  git clone -q "$remote" "$other" 2>/dev/null
+  print -r -- '# next' >> "$other/zsh-opencode-mini.plugin.zsh"
+  git -C "$other" -c user.email=a@b -c user.name=a commit -qam next
+  git -C "$other" push -q origin HEAD:main
+
+  local out rc
+  out=$(zsh -f -c "source '$src/zsh-opencode-mini.plugin.zsh'; zom-update" 2>&1) && rc=0 || rc=$?
+  assert_eq "S43 clean checkout upgrades" "${rc:-0}" "0"
+  assert_contains "S43 fast-forwarded to upstream" "$(git -C "$src" log --oneline -1)" "next"
+  assert_contains "S43 installer runs after the checkout" "$out" "INSTALLER_RAN"
+
+  print -r -- '# local' >> "$src/zsh-opencode-mini.plugin.zsh"
+  out=$(zsh -f -c "source '$src/zsh-opencode-mini.plugin.zsh'; zom-update" 2>&1) && rc=0 || rc=$?
+  assert_eq "S43 dirty checkout refuses" "$rc" "1"
+  assert_contains "S43 dirty reason is visible" "$out" "local changes"
+  assert_not_contains "S43 dirty checkout does not install" "$out" "INSTALLER_RAN"
+  cleanup
+}
+
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
          t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S10b_extensions_suite \
@@ -1350,8 +1360,8 @@ for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload
          t_S28_external_hook t_S29_size_sentinel t_S30_notices t_S31_spawn_measurement \
          t_S32_prefill_consumed_once t_S33_hook_stdin_tty t_S34_osc_switch \
          t_S35_stderr_tail t_S36_drain_bg_skip t_S37_stderr_dual_mode \
-         t_S38_failure_tty_scope t_S39_hook_registration t_S40_session_dir \
-         t_S41_crash_restore t_S42_install_probe; do
+         t_S38_failure_tty_scope t_S39_hook_registration \
+         t_S41_crash_restore t_S42_install_probe t_S43_zom_update; do
   print -r -- "[$t]"
   $t
 done
