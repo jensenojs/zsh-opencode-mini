@@ -1,0 +1,31 @@
+#!/bin/sh
+# pre-commit: 多机 dev 模式一致性守卫。
+# 各机的 devPath 指向本机克隆的工作树, 一台机器上基于旧提交的修改,
+# 提交推送后其他机器 pull 之前 dev 模式读到的都是旧扩展。
+# 因此 commit 前先 fetch origin, HEAD 落后则自动 fast-forward, 已分叉则中止。
+#
+# 启用: git config core.hooksPath .githooks (每个克隆执行一次)
+
+upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || exit 0
+
+if ! git fetch --quiet origin 2>/dev/null; then
+  echo "pre-commit: fetch origin 失败(离线?), 跳过新鲜度检查" >&2
+  exit 0
+fi
+
+behind=$(git rev-list --count "HEAD..$upstream")
+[ "$behind" -eq 0 ] && exit 0
+
+if git merge-base --is-ancestor HEAD "$upstream"; then
+  # 实测: ff 合并不触碰的暂存改动会保留; 触碰到的合并拒绝且暂存内容不动
+  if git merge --ff-only --quiet "$upstream" 2>/dev/null; then
+    echo "pre-commit: HEAD 落后 $upstream $behind 个提交, 已自动 fast-forward" >&2
+    exit 0
+  fi
+  echo "pre-commit: 自动快进失败(暂存改动与上游修改了同一文件)。" >&2
+  echo "  手动处理: git stash && git merge --ff-only $upstream && git stash pop" >&2
+  exit 1
+fi
+
+echo "pre-commit: 本地与 $upstream 已分叉(落后 $behind 个提交), 先 rebase/merge 再提交" >&2
+exit 1
