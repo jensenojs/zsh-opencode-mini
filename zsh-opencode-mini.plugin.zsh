@@ -1191,8 +1191,15 @@ zom-update() {
     return 1
   fi
   # A diverged checkout is a state to resolve by hand, never to overwrite.
-  if ! git -C "$src" merge --ff-only '@{u}' >/dev/null 2>&1; then
-    print -u2 -- "zom-update: $src cannot fast-forward to @{u} — resolve it by hand"
+  # Sheldon and CI checkouts are detached, so there is no @{u}; fast-forward
+  # them to the remote's default branch tip instead.
+  local upstream
+  if ! upstream=$(git -C "$src" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null); then
+    upstream="origin/HEAD"
+    git -C "$src" rev-parse --verify --quiet "$upstream" >/dev/null || upstream="origin/main"
+  fi
+  if ! git -C "$src" merge --ff-only "$upstream" >/dev/null 2>&1; then
+    print -u2 -- "zom-update: $src cannot fast-forward to $upstream — resolve it by hand"
     return 1
   fi
   print -- "zom-update: $(git -C "$src" log --oneline -1)"
