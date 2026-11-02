@@ -50,18 +50,12 @@ replayLimit = 50
 # absolute path to use a specific build.
 # binary = "opencode-zom"
 
-# Agent id mini runs as. companion.js registers its agent under the same name,
-# so this key feeds the launch flag and the agent definition alike: rename it
-# here and the registration, the notice gate and the extensions follow on the
-# next load. Deleting the key falls back to "mini".
+# Which role mini runs as. Default "mini": the terminal role this plugin
+# registers and owns, whose prompt is <config dir>/agent.md. Any other name
+# borrows that role for the launch and never edits it — the role keeps its own
+# system prompt, and the terminal brief rides the request tail instead.
+# "off" pins nothing: the session keeps whatever role it already had.
 agent = "mini"
-
-# Store mini's data in the same database as the stock opencode binary
-# ("on", default) instead of a per-channel copy. Both binaries must then
-# tolerate each other's schema migrations — fine while the fork tracks a
-# recent upstream tag; set "off" to go back to the isolated
-# opencode-<channel>.db.
-sharedDatabase = "on"
 
 # Keys nobody claims inside mini (not a keymap action, not composer input):
 # "on" (default) logs them to <dataDir>/passthrough.<pid>.keys.log (rolling

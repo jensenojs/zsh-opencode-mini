@@ -70,7 +70,6 @@ __zom_cfg_load() {
     ZOM_CFG[keybindConflict]=""
     ZOM_CFG[dataDir]=""
     ZOM_CFG[agent]=""
-    ZOM_CFG[sharedDatabase]=""
     ZOM_CFG[resume]=""
     ZOM_CFG[replay]=""
     ZOM_CFG[replayLimit]=""
@@ -94,7 +93,6 @@ __zom_cfg_load() {
     "ZOM_CFG[keybindConflict]="   + (($s.keybindConflict // "") | @sh),
     "ZOM_CFG[dataDir]="           + (($s.dataDir        // "") | @sh),
     "ZOM_CFG[agent]="             + (($s.agent          // "") | @sh),
-    "ZOM_CFG[sharedDatabase]="    + (($s.sharedDatabase // "") | @sh),
     "ZOM_CFG[resume]="            + (($s.resume         // "") | @sh),
     "ZOM_CFG[replay]="            + (($s.replay         // "") | @sh),
     "ZOM_CFG[replayLimit]="       + (($s.replayLimit    // "") | @sh),
@@ -132,7 +130,6 @@ typeset -gA ZOM_DEFAULTS=(
   [keybindConflict]="notify"
   [dataDir]="${XDG_DATA_HOME:-$HOME/.local/share}/zsh-opencode-mini"
   [agent]="mini"
-  [sharedDatabase]="on"
   [resume]="main"
   [replay]="on"
   [replayLimit]="50"
@@ -175,7 +172,7 @@ SHELL = {
     "replayLimit": (INT,), "passthrough": (STR,), "passthroughKeys": (STR,),
     "historyRetainMonths": (INT, STR), "osc": (STR,), "stderrCapture": (STR,),
     "failurePrefill": (STR,), "model": (STR,), "leader": (STR,),
-    "sharedDatabase": (STR,), "failureTtlSeconds": (INT,), "recentDefaultN": (INT,),
+    "failureTtlSeconds": (INT,), "recentDefaultN": (INT,),
 }
 COMPANION = {
     "failureTtlSeconds": (INT,), "recentDefaultN": (INT,),
@@ -296,20 +293,6 @@ case "$ZOM_RESUME" in
   *)
     print -u2 -- "zsh-opencode-mini: shell.resume '$ZOM_RESUME' invalid (main|off) — using ${ZOM_DEFAULTS[resume]}."
     ZOM_RESUME="${ZOM_DEFAULTS[resume]}" ;;
-esac
-# Shared session store. The channel-isolated opencode-zom.db exists to keep the
-# fork's schema away from the stock binary's auto-update migrations; opting in
-# (default) sets the upstream switch that points the fork back at the one
-# shared opencode.db — one session store for both binaries. If a stock update
-# ever migrates the schema out from under the fork, "off" restores the
-# isolated database without rebuilding anything.
-ZOM_SHARED_DB=${ZOM_CFG[sharedDatabase]}
-case "$ZOM_SHARED_DB" in
-  "" | null | on)  ZOM_SHARED_DB=on ;;
-  off)             : ;;
-  *)
-    print -u2 -- "zsh-opencode-mini: shell.sharedDatabase '$ZOM_SHARED_DB' invalid (on|off) — using on."
-    ZOM_SHARED_DB=on ;;
 esac
 
 
@@ -917,7 +900,9 @@ zom-bg() {
   # sid exists before the hooks so consumers (e.g. wezterm-attention) can
   # bind the coming background session to this pane's activity.
   __zom_run_spawn_hooks bg "$sid"
-  [[ "$ZOM_SHARED_DB" == on ]] && local -x OPENCODE_DISABLE_CHANNEL_DB=1
+  # One session store for both binaries: the fork writes the stock opencode.db
+  # instead of its per-channel copy (packages/cli/src/database-path.ts).
+  local -x OPENCODE_DISABLE_CHANNEL_DB=1
   "$ZOM_BINARY" run -s "$sid" "$@" >/dev/null 2>&1 &
   local pid=$!   # capture before anything else can spawn — $! is the run process
   print -r -- "{\"sid\":\"$sid\",\"pid\":$pid,\"cwd\":\"$(__zom_json_escape "$PWD")\",\"started\":$EPOCHSECONDS}" \
@@ -1026,10 +1011,11 @@ __zom_mini_argv() {
       off) ZOM_ARGV+=(--no-replay) ;;
     esac
   fi
-  # One source for the agent id: this config key. companion.js reads the same
-  # key and registers its agent under it, so the launch and the definition
-  # cannot drift apart.
-  ZOM_ARGV+=(--agent "${ZOM_CFG[agent]:-${ZOM_DEFAULTS[agent]}}")
+  # Which role mini runs as. companion.js reads the same key, but never
+  # registers under it: a name here is only ever borrowed, so the role keeps its
+  # own definition. "off" pins nothing and leaves the session's role alone.
+  local agent=${ZOM_CFG[agent]:-${ZOM_DEFAULTS[agent]}}
+  [[ "$agent" != off ]] && ZOM_ARGV+=(--agent "$agent")
   # The leader is a mini-side knob: the main TUI keeps cli.json's leader, and
   # mini gets its own because its dismiss key owns ctrl+x.
   local leader=${ZOM_CFG[leader]:-${ZOM_DEFAULTS[leader]}}
@@ -1074,8 +1060,8 @@ __zom_launch_mini() {
   # every C-x. Hide them via the CLI-config env overlay — this plugin-owned
   # override never touches the user's cli.json.
   local -x OPENCODE_CLI_CONFIG_CONTENT='{"mini":{"splash":"hide"}}'
-  # One session store with the stock binary (see ZOM_SHARED_DB above).
-  [[ "$ZOM_SHARED_DB" == on ]] && local -x OPENCODE_DISABLE_CHANNEL_DB=1
+  # One session store with the stock binary (see the zom-bg launch).
+  local -x OPENCODE_DISABLE_CHANNEL_DB=1
   if [[ "$ZOM_PASSTHROUGH" == on ]]; then
     rm -f "$ZOM_PASSTHROUGH_FILE"
     local -x ZOM_PASSTHROUGH_FILE="$ZOM_PASSTHROUGH_FILE"
@@ -1246,7 +1232,7 @@ zom-last() {
   print -- "zom-last: $last_failed"
   # `run` creates a fresh session whose id is only known to opencode itself.
   __zom_run_spawn_hooks last
-  [[ "$ZOM_SHARED_DB" == on ]] && local -x OPENCODE_DISABLE_CHANNEL_DB=1
+  local -x OPENCODE_DISABLE_CHANNEL_DB=1
   "$ZOM_BINARY" run "Explain and fix this failed command (run in the current directory): $last_failed"
 }
 
@@ -1398,7 +1384,6 @@ zom-config() {
   __zom_cfg_line failurePrefill "$ZOM_FAILURE_PREFILL_TMPL"
   __zom_cfg_line model          "${ZOM_CFG[model]}"
   __zom_cfg_line agent          "${ZOM_CFG[agent]:-${ZOM_DEFAULTS[agent]}}"
-  __zom_cfg_line sharedDatabase "${ZOM_CFG[sharedDatabase]:-${ZOM_DEFAULTS[sharedDatabase]}}"
   __zom_cfg_line leader         "${ZOM_CFG[leader]:-${ZOM_DEFAULTS[leader]}}"
   print -r -- "companion (read by the opencode-side plugin, per session):"
   __zom_cfg_line failureTtlSeconds "$ZOM_FAILURE_TTL"

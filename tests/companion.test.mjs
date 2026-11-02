@@ -172,6 +172,9 @@ function makeCtx({ version = "2.0.21", omit = [] } = {}) {
   const has = (s) => !omit.includes(s)
   const ctx = {
     app: { version },
+    // The plugin instance's location: where this load was mounted, which the
+    // shared server knows and process.cwd() does not.
+    location: { directory: "/workspace" },
     // Registration surfaces are async in the real runtime (they resolve after
     // the registry is written). The mocks defer by a tick so a host that does
     // not await them fails these tests instead of passing by accident.
@@ -301,21 +304,22 @@ try {
     readFileSync(new URL("../agent.example.md", import.meta.url), "utf8"),
   )
 
-  // 1c. the agent id is configuration, not a constant: shell.agent renames it,
-  // and the same value must both register the agent and gate injection.
+  // 1c. shell.agent pins the role mini runs as; it never renames the role the
+  // plugin registers, because a pin may name one of the user's own agents and
+  // the registry is shared by every session in the server.
   shared.write({ shell: { agent: "renamed-companion" }, companion: { failureTtlSeconds: TTL } })
   const renamed = makeCtx()
   await plugin.setup(renamed.ctx)
-  const renamedAgent = renamed.state.agents["renamed-companion"]
-  renamedAgent && renamedAgent.mode === "primary"
-    ? ok("shell.agent names the agent")
-    : bad("shell.agent names the agent", JSON.stringify(Object.keys(renamed.state.agents)))
+  const ownAgentGone = !renamed.state.agents["renamed-companion"]
+  ownAgentGone
+    ? ok("shell.agent never registers under the pinned name")
+    : bad("shell.agent never registers under the pinned name", JSON.stringify(Object.keys(renamed.state.agents)))
   signal(now - 30)
   const oldName = { system: [], messages: [], agent: "mini" }
   fire(renamed.state, oldName)
   const newName = { system: [], messages: [], agent: "renamed-companion" }
   fire(renamed.state, newName)
-  tailTexts(oldName).length === 0 && tailTexts(newName).length === 1
+  tailTexts(oldName).length === 0 && tailTexts(newName).length > 0
     ? ok("shell.agent gates injection")
     : bad("shell.agent gates injection", `old=${tailTexts(oldName).length} new=${tailTexts(newName).length}`)
   rmSync(shared.cfgPath, { force: true })

@@ -289,13 +289,13 @@ EOF
   cleanup
   sandbox
   write_config <<'EOF'
-{ "shell": { "resume": "main", "replay": "off", "sharedDatabase": "off" } }
+{ "shell": { "resume": "main", "replay": "off" } }
 EOF
   run_zsh 'zom extra-arg' >/dev/null 2>&1
   log=$(cat "$ZOM_MOCK_LOG")
   sid=$(cat "$SD/main-session")
   assert_contains "S6 replay=off passes --no-replay" "$log" "argv=mini -s $sid --no-replay --agent mini --leader ctrl+m extra-arg"
-  assert_contains "S6 sharedDatabase off drops the env switch" "$log" "dbflag=<unset>"
+  assert_contains "S6 the shared database switch is not configurable" "$log" "dbflag=1"
   cleanup
   sandbox
   write_config <<'EOF'

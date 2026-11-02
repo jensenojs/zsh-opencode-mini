@@ -1,34 +1,29 @@
 // zsh-opencode-mini's prompt-cache watcher.
 //
-// One alarm, one condition: the shared prefix of this request differs from the
-// same session's previous request, so every token before the divergence point
-// re-pays at uncached rates. What we hash is deliberately the *shared* region:
-// the date and <env> blocks sit at the tail and change on every directory move,
-// but a change there only re-pays that block, not the context before it —
-// reporting it would cry wolf on the cheapest switch there is.
+// One alarm, one condition: in the same directory, the shared prefix of this
+// request differs from the same session's previous request, so every token
+// before the divergence point re-pays at uncached rates.
+//
+// The environment is compared by identity, not by text. A prompt renders the
+// project name many times over — instruction files, MCP server labels, tool
+// descriptions — and recognising any of them would tie this extension to one
+// user's configuration. A different directory replaces the baseline instead:
+// a new environment has nothing to compare against, and whatever moved is that
+// environment's rendering, not a change to this conversation.
 
 import { createHash } from "node:crypto"
 
 const NOTICE = "[zom-cache-watch]"
-
-// Tail blocks the server re-renders per request: a change here costs its own
-// size, not the prefix. Matched by their fixed anchors, not by index.
-const isTailVolatile = (part) => {
-  const text = String(part.text ?? "")
-  return text.includes("<env>") || text.startsWith("Today's date") || text.includes("Here is some useful information about the environment")
-}
 
 const hashOf = (system, tools) =>
   createHash("sha1")
     // our own notice is not part of what the user changed
     .update(
       JSON.stringify([
-        system.filter((part) => !String(part.text ?? "").startsWith(NOTICE) && !isTailVolatile(part)),
-        // Tool descriptions carry the environment too: tilth's label, MCP
-        // server text. A directory switch moves them as often as the system
-        // parts, and either one invalidates the same prefix. The input schema
-        // is part of what the model was told, so a schema edit is a prefix
-        // change too — hashing only the prose would stay quiet through it.
+        system.filter((part) => !String(part.text ?? "").startsWith(NOTICE)),
+        // Tool descriptions are part of the same prefix: an MCP server's
+        // schema edit re-pays everything after it even when no prose moved.
+        // Hashing only the system text would stay quiet through that.
         Object.entries(tools ?? {})
           .sort(([a], [b]) => (a < b ? -1 : 1))
           .map(([name, value]) => [
@@ -58,19 +53,28 @@ export default {
       host.report?.("host missing storage — companion build is too old")
       return
     }
+    // The environment's identity comes from the host, not from the prompt and
+    // not from process.cwd(): the plugin runs in a shared server whose working
+    // directory is wherever it was launched, not the session's.
+    if (typeof host.directory !== "string") {
+      host.report?.("host missing directory — companion build is too old")
+      return
+    }
     const store = host.storage("zom-cache-watch")
     const persisted = store.get() ?? {}
-    const hashes = persisted.hashes ?? {} // sessionID -> hash of its last request's prefix
+    // sessionID -> { dir, hash }: the baseline is only valid inside the
+    // directory it was taken in.
+    const baselines = persisted.baselines ?? {}
     // One key per session, never removed: a long-lived install accumulates
     // sessions it will never see again. JSON preserves insertion order, so the
     // front is least recently touched.
     const HASH_CAP = 128
-    const remember = (id, hash) => {
-      delete hashes[id]
-      hashes[id] = hash
-      const keys = Object.keys(hashes)
-      for (const k of keys.slice(0, Math.max(0, keys.length - HASH_CAP))) delete hashes[k]
-      store.set({ hashes })
+    const remember = (id, dir, hash) => {
+      delete baselines[id]
+      baselines[id] = { dir, hash }
+      const keys = Object.keys(baselines)
+      for (const k of keys.slice(0, Math.max(0, keys.length - HASH_CAP))) delete baselines[k]
+      store.set({ baselines })
     }
 
     ctx.session.hook("context", (event) => {
@@ -79,21 +83,19 @@ export default {
       // its prefix changes for reasons that are none of its business.
       if (event.agent !== host.agent) return
       const id = event.sessionID
-      const dir = process.cwd()
+      const dir = host.directory
       const hash = hashOf(event.system ?? [], event.tools)
-      const prev = hashes[id]
+      const prev = baselines[id]
 
-      // One-shot migration: the earlier build only remembered a directory.
-      if (!prev && persisted.lastDir) {
-        const moved = persisted.lastDir !== dir
-        delete persisted.lastDir
-        remember(id, hash)
-        if (moved) host.inject(event, noticeText())
+      // A different directory is a different environment. The parts that
+      // moved are that environment's rendering, so there is no baseline to
+      // compare this request against, and nothing to tell the user.
+      if (!prev || prev.dir !== dir) {
+        remember(id, dir, hash)
         return
       }
-
-      remember(id, hash)
-      if (!prev || prev === hash) return
+      if (prev.hash === hash) return
+      remember(id, dir, hash)
       host.inject(event, noticeText())
     })
   },

@@ -57,6 +57,9 @@ function makeHost(backend = new Map(), agent = "mini") {
       set: (v) => backend.set(key, JSON.stringify(v)),
     }),
     dataDir: tmpdir(),
+    // The plugin instance's location: the shared server knows it, the process
+    // does not (its cwd is where the server was launched).
+    directory: "/workspace",
     // The host merges its documented defaults into the companion section before
     // any extension sees it; mirror that here so "absent knob" means a host
     // too old to run the extension, not a value nobody filled.
@@ -124,27 +127,33 @@ function delta(ext, sid, dInput, dRead) {
   await cacheWatch.setup(c.ctx, h.host)
 
   check("first request only seeds the baseline", turn(c, prefix()).length === 0)
-  check("baseline persisted", JSON.parse(shared.get("zom-cache-watch")).hashes[sid]?.length > 0)
+  check("baseline persisted", JSON.parse(shared.get("zom-cache-watch")).baselines[sid]?.hash.length > 0)
   check("unchanged prefix stays quiet", turn(c, prefix()).length === 0)
 
   const fired = turn(c, prefix(" v2"))
   check("changed prefix fires on that request", fired.length === 1 && fired[0].includes("prompt prefix changed"))
   check("notice explains the re-pay", fired[0].includes("re-pays at uncached rates"))
-  {
-    // A directory move rewrites only the tail <env> block: cheap, and the
-    // whole point of the shared-prefix hash is not to cry wolf on it.
-    const env = (dir) => [
-      ...prefix(" v2"),
-      { type: "text", text: "Here is some useful information about the environment you are running in:\n<env>\n  Working directory: " + dir },
-    ]
-    check("tail env seeded", turn(c, env("/a")).length === 0)
-    check("tail env move stays quiet", turn(c, env("/b")).length === 0)
-  }
   check("fires once per change", turn(c, prefix(" v2")).length === 0)
   check(
     "our own notice does not perturb the hash",
     turn(c, [...prefix(" v2"), { type: "text", text: "[zom-cache-watch] prompt prefix changed" }]).length === 0,
   )
+  {
+    // The environment has an identity: its directory. Switching rewrites the
+    // instruction files, MCP labels and tool descriptions, and none of that is
+    // this extension's business to recognise — a new directory has no baseline
+    // to compare against, so it seeds silently.
+    const seen = h.host.directory
+    h.host.directory = "/workspace/a"
+    check("new directory seeds silently", turn(c, prefix(" v3")).length === 0)
+    h.host.directory = "/workspace/b"
+    check("directory change reseeds silently", turn(c, prefix(" v4")).length === 0)
+    check("same directory still reports", turn(c, prefix(" v5")).length === 1)
+    h.host.directory = "/workspace/a"
+    check("returning to a seen directory is a new baseline", turn(c, prefix(" v3")).length === 0)
+    h.host.directory = seen
+    check("restored directory reseeds silently", turn(c, prefix(" v3")).length === 0)
+  }
   {
     // The tool list is part of the cached prefix: an MCP server's schema edit
     // re-pays everything before it even when its prose did not move. A
@@ -169,6 +178,20 @@ function delta(ext, sid, dInput, dRead) {
     )
   }
   {
+    const other = []
+    c.fire("context", { sessionID: "ses_build", system: prefix(" other"), messages: other, agent: "orchestrator" })
+    check("other agents' sessions get nothing", other.length === 0)
+    check("other agents' sessions are not tracked", !JSON.parse(shared.get("zom-cache-watch")).baselines.ses_build)
+  }
+
+  // a relaunch inherits the baselines: no bootstrap blind spot for a known session
+  const reborn = boot()
+  await cacheWatch.setup(reborn.c.ctx, reborn.h.host)
+  const afterReboot = turn(reborn.c, prefix(" v9"))
+  check("relaunched instance fires on the first changed request", afterReboot.length === 1)
+  check("reboot without change stays quiet", turn(reborn.c, [{ type: "text", text: "core instructions v9" }]).length === 0)
+
+  {
     // Sessions accumulate forever if the map grows without a cap: one key per
     // session, and old sessions never come back.
     for (let i = 0; i < 140; i++) {
@@ -179,37 +202,10 @@ function delta(ext, sid, dInput, dRead) {
         agent: "mini",
       })
     }
-    const kept = Object.keys(JSON.parse(shared.get("zom-cache-watch")).hashes)
+    const kept = Object.keys(JSON.parse(shared.get("zom-cache-watch")).baselines)
     check("remembered sessions are capped", kept.length <= 128)
     check("the newest session survives the cap", kept.includes("ses_bulk_139"))
   }
-  {
-    const other = []
-    c.fire("context", { sessionID: "ses_build", system: prefix(" other"), messages: other, agent: "orchestrator" })
-    check("other agents' sessions get nothing", other.length === 0)
-    check("other agents' sessions are not tracked", !JSON.parse(shared.get("zom-cache-watch")).hashes.ses_build)
-  }
-  check(
-    "our own notice does not perturb the hash",
-    turn(c, [...prefix(" v2"), { type: "text", text: "[zom-cache-watch] prompt prefix changed" }]).length === 0,
-  )
-
-  // a relaunch inherits the hashes: no bootstrap blind spot for a known session
-  const reborn = boot()
-  await cacheWatch.setup(reborn.c.ctx, reborn.h.host)
-  const afterReboot = turn(reborn.c, prefix(" v3"))
-  check("relaunched instance fires on the first changed request", afterReboot.length === 1)
-  check("reboot without change stays quiet", turn(reborn.c, [{ type: "text", text: "core instructions v3" }]).length === 0)
-
-  // one-shot migration from the earlier directory-keyed build
-  const legacy = new Map([["zom-cache-watch", JSON.stringify({ lastDir: "/somewhere/else" })]])
-  const m = makeHost(legacy)
-  const mc = makeCtx()
-  await cacheWatch.setup(mc.ctx, m.host)
-  const migrated = turn(mc, [{ type: "text", text: "core instructions v4" }])
-  check("legacy state migrates and fires once", migrated.length === 1)
-  const after = JSON.parse(legacy.get("zom-cache-watch"))
-  check("legacy lastDir dropped after migration", !("lastDir" in after) && after.hashes[sid]?.length > 0)
 }
 
 // --- state-watch -----------------------------------------------------------

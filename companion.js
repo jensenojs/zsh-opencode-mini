@@ -88,7 +88,12 @@ function configPath() {
 // host's config dir. Agent discovery is directory-based, but a plugin may seed
 // the registry: update() on an unknown id starts from Agent.Info.default
 // (packages/core/src/agent.ts:63), and Agent.Info carries `system`.
-const DEFAULT_AGENT = "mini"
+//
+// This is the only id update() may ever target. shell.agent picks which role
+// mini runs as; it never picks which definition gets written, because that id
+// may belong to the user (build, plan, their own) and the registry is shared by
+// every session in the server.
+const OWN_AGENT = "mini"
 
 // The conversation tail is the only place a hint can go without paying for the
 // cached prefix again. Module scope because both the host hook and the
@@ -375,10 +380,13 @@ export default {
     // dataDir and recipes alike).
     const fullCfg = loadConfig()
     const configuredAgent = fullCfg?.shell?.agent
-    const agentID =
-      typeof configuredAgent === "string" && configuredAgent.trim() !== ""
+    // "off" is this product's word for "no pin", the same spelling replay and
+    // osc use. Empty means the key was never written.
+    const pinned =
+      typeof configuredAgent === "string" && configuredAgent.trim() !== "off"
         ? configuredAgent.trim()
-        : DEFAULT_AGENT
+        : ""
+    const agentID = pinned || OWN_AGENT
     const cfg = { ...DEFAULTS, ...fullCfg?.companion }
     const dataDir = shellDataDir(fullCfg)
     // Raw: the shape of a recipe is the recipes extension's business.
@@ -420,14 +428,29 @@ export default {
     // to <config dir>/agent.md lands without a restart. The runtime may hand
     // back a promise; ignoring it means setup resolves before the agent
     // exists, and the first request sees no agent at all.
-    await ctx.agent.transform((agent) => {
-      agent.update(agentID, (item) => {
-        item.system = agentSystemPrompt()
-        item.description = AGENT_DESCRIPTION
-        item.mode = "primary"
-        item.hidden = true
+    // Registration writes only the plugin's own role. A pin naming someone
+    // else's agent is a launch flag, never an edit: update() on a user id would
+    // rewrite that role's system, mode and visibility for every session in this
+    // server, which is the opposite of borrowing it.
+    if (agentID === OWN_AGENT) {
+      await ctx.agent.transform((agent) => {
+        agent.update(OWN_AGENT, (item) => {
+          item.system = agentSystemPrompt()
+          item.description = AGENT_DESCRIPTION
+          item.mode = "primary"
+          item.hidden = true
+        })
       })
-    })
+    } else {
+      // A pinned role keeps its own system. The terminal brief still has to
+      // reach the request, so it rides the conversation tail — the same channel
+      // extensions use, and the one place that does not re-pay the prefix.
+      ctx.session.hook("context", (event) => {
+        if (event.agent !== agentID) return
+        const brief = agentSystemPrompt()
+        if (brief) inject(event, brief)
+      })
+    }
 
     // The watcher and the outbox writer both need the directory to exist; the
     // zsh side creates it too, so this is idempotent.
@@ -809,7 +832,7 @@ function dispatchUsage(p) {
   }
 }
 
-export async function loadExtensions(ctx, dataDir, agentID = DEFAULT_AGENT, cfg = {}, services = {}) {
+export async function loadExtensions(ctx, dataDir, agentID = OWN_AGENT, cfg = {}, services = {}) {
   // Extensions live next to config.toml, wherever ZOM_CONFIG points the
   // config — same rule the zsh installer mirrors on the way in.
   // devPath points the loader at a working tree, so an edited extension takes
@@ -1096,6 +1119,10 @@ export async function loadExtensions(ctx, dataDir, agentID = DEFAULT_AGENT, cfg 
     inject: (event, text) => inject(views.get(event) ?? event, text),
     storage: (key) => extensionStorage(dataDir, key),
     dataDir,
+    // The directory this plugin instance was loaded in: the environment's
+    // identity for policy modules that must not read the prompt to learn it.
+    // Not process.cwd() — the server is shared and keeps its launch directory.
+    directory: typeof ctx?.location?.directory === "string" ? ctx.location.directory : null,
     // Parsed records, not decisions: the extension judges freshness and
     // terminal ownership, the host owns the file formats.
     files: {
