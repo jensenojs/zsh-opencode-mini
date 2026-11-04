@@ -1,5 +1,5 @@
-// Unit tests for the extensions layer: policy modules (cache-watch,
-// state-watch) on a mock host, plus companion's isolation guarantees
+// Unit tests for the extensions layer: policy modules (state-watch) on a
+// mock host, plus companion's isolation guarantees
 // (loadExtensions scans ZOM_CONFIG's dir; a broken extension dies alone).
 // Run: node tests/extensions.test.mjs
 // Also driven by tests/run.zsh (S10b).
@@ -7,7 +7,6 @@
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync, utimesSync, statSync, readdirSync, rmSync, copyFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import cacheWatch from "../extensions/cache-watch.js"
 import stateWatch from "../extensions/state-watch.js"
 import sessionTitle from "../extensions/session-title.js"
 import { loadExtensions, trimTailFile } from "../companion.js"
@@ -105,107 +104,6 @@ function makeHost(backend = new Map(), agent = "mini") {
 
 function delta(ext, sid, dInput, dRead) {
   ext({ sid, dInput, dRead })
-}
-
-// --- cache-watch -----------------------------------------------------------
-{
-  const shared = new Map()
-  const boot = () => {
-    const c = makeCtx()
-    const h = makeHost(shared)
-    return { c, h }
-  }
-  const sid = "ses_test"
-  const prefix = (extra = "") => [{ type: "text", text: "core instructions" + extra }]
-  const turn = (c, system) => {
-    const messages = []
-    c.fire("context", { sessionID: sid, system, messages, agent: "mini" })
-    return messages.map((m) => m.content.map((p) => p.text).join(""))
-  }
-
-  let { c, h } = boot()
-  await cacheWatch.setup(c.ctx, h.host)
-
-  check("first request only seeds the baseline", turn(c, prefix()).length === 0)
-  check("baseline persisted", JSON.parse(shared.get("zom-cache-watch")).baselines[sid]?.hash.length > 0)
-  check("unchanged prefix stays quiet", turn(c, prefix()).length === 0)
-
-  const fired = turn(c, prefix(" v2"))
-  check("changed prefix fires on that request", fired.length === 1 && fired[0].includes("prompt prefix changed"))
-  check("notice explains the re-pay", fired[0].includes("re-pays at uncached rates"))
-  check("fires once per change", turn(c, prefix(" v2")).length === 0)
-  check(
-    "our own notice does not perturb the hash",
-    turn(c, [...prefix(" v2"), { type: "text", text: "[zom-cache-watch] prompt prefix changed" }]).length === 0,
-  )
-  {
-    // The environment has an identity: its directory. Switching rewrites the
-    // instruction files, MCP labels and tool descriptions, and none of that is
-    // this extension's business to recognise — a new directory has no baseline
-    // to compare against, so it seeds silently.
-    const seen = h.host.directory
-    h.host.directory = "/workspace/a"
-    check("new directory seeds silently", turn(c, prefix(" v3")).length === 0)
-    h.host.directory = "/workspace/b"
-    check("directory change reseeds silently", turn(c, prefix(" v4")).length === 0)
-    check("same directory still reports", turn(c, prefix(" v5")).length === 1)
-    h.host.directory = "/workspace/a"
-    check("returning to a seen directory is a new baseline", turn(c, prefix(" v3")).length === 0)
-    h.host.directory = seen
-    check("restored directory reseeds silently", turn(c, prefix(" v3")).length === 0)
-  }
-  {
-    // The tool list is part of the cached prefix: an MCP server's schema edit
-    // re-pays everything before it even when its prose did not move. A
-    // separate session keeps this from perturbing the prefix checks above.
-    const toolsSid = "ses_tools"
-    const withTool = (schema) => ({
-      sessionID: toolsSid,
-      system: prefix(" v2"),
-      messages: [],
-      agent: "mini",
-      tools: { "demo.tool": { description: "same prose", parameters: schema } },
-    })
-    const fireTurn = (ev) => {
-      c.fire("context", ev)
-      return ev.messages.map((m) => m.content.map((p) => p.text).join("")).join("")
-    }
-    check("tool schema seeded", fireTurn(withTool({ a: 1 })).length === 0)
-    check("unchanged tool schema stays quiet", fireTurn(withTool({ a: 1 })).length === 0)
-    check(
-      "a tool schema change fires",
-      fireTurn(withTool({ a: 2 })).includes("prompt prefix changed"),
-    )
-  }
-  {
-    const other = []
-    c.fire("context", { sessionID: "ses_build", system: prefix(" other"), messages: other, agent: "orchestrator" })
-    check("other agents' sessions get nothing", other.length === 0)
-    check("other agents' sessions are not tracked", !JSON.parse(shared.get("zom-cache-watch")).baselines.ses_build)
-  }
-
-  // a relaunch inherits the baselines: no bootstrap blind spot for a known session
-  const reborn = boot()
-  await cacheWatch.setup(reborn.c.ctx, reborn.h.host)
-  const afterReboot = turn(reborn.c, prefix(" v9"))
-  check("relaunched instance fires on the first changed request", afterReboot.length === 1)
-  check("reboot without change stays quiet", turn(reborn.c, [{ type: "text", text: "core instructions v9" }]).length === 0)
-
-  {
-    // Sessions accumulate forever if the map grows without a cap: one key per
-    // session, and old sessions never come back.
-    for (let i = 0; i < 140; i++) {
-      c.fire("context", {
-        sessionID: `ses_bulk_${i}`,
-        system: prefix(" v2"),
-        messages: [],
-        agent: "mini",
-      })
-    }
-    const kept = Object.keys(JSON.parse(shared.get("zom-cache-watch")).baselines)
-    check("remembered sessions are capped", kept.length <= 128)
-    check("the newest session survives the cap", kept.includes("ses_bulk_139"))
-  }
 }
 
 // --- state-watch -----------------------------------------------------------
