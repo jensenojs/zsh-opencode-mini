@@ -97,9 +97,6 @@ sandbox() {
   TD=$(mktemp -d)
   # The plugin's own exports must not leak in from whoever runs the suite:
   # they are what S6 asserts against.
-  # The suite must not inherit the environment of the shell that happens to
-  # run it: OPENCODE_DISABLE_CHANNEL_DB is set inside a real mini session and
-  # would make S6 assert the wrong thing.
   unset ZOM_PASSTHROUGH_FILE ZOM_PASSTHROUGH_KEYS ZOM_CONFIG ZOM_PYTHON OPENCODE_DISABLE_CHANNEL_DB
   export HOME="$TD/home"
   export XDG_CONFIG_HOME="$TD/home/.config"
@@ -276,7 +273,6 @@ t_S6_zom_launch() {
   log=$(cat "$ZOM_MOCK_LOG")
   assert_contains "S6 default resume=main resumes the pointer sid" "$log" "argv=mini -s $sid --replay-limit 50 --agent mini --leader ctrl+m extra-arg"
   assert_eq "S6 pointer minted once, reused across launches" "$(grep -o "argv=mini -s ses_[0-9a-f]*" "$ZOM_MOCK_LOG" | sort -u | wc -l | tr -d ' ')" "1"
-  assert_contains "S6 shared database flag default on" "$log" "dbflag=1"
   cleanup
   sandbox
   write_config <<'EOF'
@@ -285,7 +281,6 @@ EOF
   run_zsh 'zom extra-arg' >/dev/null 2>&1
   log=$(cat "$ZOM_MOCK_LOG")
   assert_contains "S6 resume=off starts fresh" "$log" "argv=mini --agent mini --leader ctrl+m extra-arg"
-  assert_contains "S6 shared database flag still on" "$log" "dbflag=1"
   cleanup
   sandbox
   write_config <<'EOF'
@@ -295,7 +290,6 @@ EOF
   log=$(cat "$ZOM_MOCK_LOG")
   sid=$(cat "$SD/main-session")
   assert_contains "S6 replay=off passes --no-replay" "$log" "argv=mini -s $sid --no-replay --agent mini --leader ctrl+m extra-arg"
-  assert_contains "S6 the shared database switch is not configurable" "$log" "dbflag=1"
   cleanup
   sandbox
   write_config <<'EOF'

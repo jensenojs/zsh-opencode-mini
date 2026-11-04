@@ -900,9 +900,6 @@ zom-bg() {
   # sid exists before the hooks so consumers (e.g. wezterm-attention) can
   # bind the coming background session to this pane's activity.
   __zom_run_spawn_hooks bg "$sid"
-  # One session store for both binaries: the fork writes the stock opencode.db
-  # instead of its per-channel copy (packages/cli/src/database-path.ts).
-  local -x OPENCODE_DISABLE_CHANNEL_DB=1
   "$ZOM_BINARY" run -s "$sid" "$@" >/dev/null 2>&1 &
   local pid=$!   # capture before anything else can spawn — $! is the run process
   print -r -- "{\"sid\":\"$sid\",\"pid\":$pid,\"cwd\":\"$(__zom_json_escape "$PWD")\",\"started\":$EPOCHSECONDS}" \
@@ -1060,8 +1057,6 @@ __zom_launch_mini() {
   # every C-x. Hide them via the CLI-config env overlay — this plugin-owned
   # override never touches the user's cli.json.
   local -x OPENCODE_CLI_CONFIG_CONTENT='{"mini":{"splash":"hide"}}'
-  # One session store with the stock binary (see the zom-bg launch).
-  local -x OPENCODE_DISABLE_CHANNEL_DB=1
   if [[ "$ZOM_PASSTHROUGH" == on ]]; then
     rm -f "$ZOM_PASSTHROUGH_FILE"
     local -x ZOM_PASSTHROUGH_FILE="$ZOM_PASSTHROUGH_FILE"
@@ -1232,7 +1227,6 @@ zom-last() {
   print -- "zom-last: $last_failed"
   # `run` creates a fresh session whose id is only known to opencode itself.
   __zom_run_spawn_hooks last
-  local -x OPENCODE_DISABLE_CHANNEL_DB=1
   "$ZOM_BINARY" run "Explain and fix this failed command (run in the current directory): $last_failed"
 }
 
