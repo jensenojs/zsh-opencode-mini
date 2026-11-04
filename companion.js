@@ -876,6 +876,79 @@ export async function loadExtensions(ctx, dataDir, agentID = OWN_AGENT, cfg = {}
     return
   }
 
+  // Uninstalling an extension has to take its state with it. The zsh installer
+  // mirrors extensions/*.js and knows nothing about what those files wrote at
+  // runtime, so the loader — the only one that sees both sides — sweeps on
+  // every load: an extension that is no longer on disk loses the files it
+  // declared through storage()/kv(), plus the rollback artifacts named after
+  // it. Shared channels (outbox.jsonl, notices.jsonl) are named after no
+  // extension and are never touched.
+  const ownedPath = join(dataDir, "ext-owned.json")
+  const readOwned = () => {
+    try {
+      return JSON.parse(readFileSync(ownedPath, "utf8")) ?? {}
+    } catch {
+      return {}
+    }
+  }
+  const writeOwned = (owned) => {
+    try {
+      writeFileSync(ownedPath, JSON.stringify(owned))
+    } catch {}
+  }
+  // Rollback artifacts carry the extension's file name: <base>.<hash>.js,
+  // <name>.json (hash state), <name>.broken.
+  const artifactName = (file) => {
+    const good = /^(.+)\.[0-9a-f]{16}\.js$/.exec(file)
+    if (good) return `${good[1]}.js`
+    if (file.endsWith(".broken")) return file.slice(0, -".broken".length)
+    if (file.endsWith(".json")) return file.slice(0, -".json".length)
+    return ""
+  }
+  // Staged copies are ext-<pid>-<hash>-<name>.
+  const stagedName = (file) => {
+    const m = /^ext-\d+-[0-9a-f]{16}-(.+)$/.exec(file)
+    return m ? m[1] : ""
+  }
+  const pruneUninstalled = () => {
+    const present = new Set(entries)
+    const owned = readOwned()
+    let changed = false
+    for (const [name, record] of Object.entries(owned)) {
+      if (present.has(name)) continue
+      for (const rel of record?.files ?? []) {
+        // A registry entry names a file directly inside dataDir; anything with
+        // a path separator is not ours to delete.
+        if (typeof rel !== "string" || rel.includes("/") || rel.includes("\\")) continue
+        try {
+          unlinkSync(join(dataDir, rel))
+        } catch {}
+      }
+      delete owned[name]
+      changed = true
+    }
+    if (changed) writeOwned(owned)
+    for (const [dir, nameOf] of [
+      [goodDir, artifactName],
+      [stageDir, stagedName],
+    ]) {
+      let files = []
+      try {
+        files = readdirSync(dir)
+      } catch {
+        continue
+      }
+      for (const file of files) {
+        const name = nameOf(file)
+        if (!name || present.has(name)) continue
+        try {
+          unlinkSync(join(dir, file))
+        } catch {}
+      }
+    }
+  }
+  pruneUninstalled()
+
   for (const name of entries) {
     const file = join(dir, name)
     let id = name.replace(/\.js$/, "")
@@ -1028,6 +1101,9 @@ export async function loadExtensions(ctx, dataDir, agentID = OWN_AGENT, cfg = {}
   // hook or a tool behind that has no owner and fires on every request.
   const begin = (id, mod) => {
     const pending = []
+    // Every file this extension declares through the host, so uninstalling it
+    // can remove exactly those. Names are dataDir-local.
+    const ownedFiles = new Set([`${id}.kv.json`])
     // Views handed to hooks resolve back to the real event here, so an
     // extension can only add a tail message through host.inject — never by
     // pushing into the array it was given.
@@ -1050,7 +1126,10 @@ export async function loadExtensions(ctx, dataDir, agentID = OWN_AGENT, cfg = {}
     // prompt: the system text is the cached prefix, and a hint that changes
     // between requests would re-pay for every token after it.
     inject: (event, text) => inject(views.get(event) ?? event, text),
-    storage: (key) => extensionStorage(dataDir, key),
+    storage: (key) => {
+      ownedFiles.add(`${key}.json`)
+      return extensionStorage(dataDir, key)
+    },
     dataDir,
     // The directory this plugin instance was loaded in: the environment's
     // identity for policy modules that must not read the prompt to learn it.
@@ -1172,7 +1251,17 @@ export async function loadExtensions(ctx, dataDir, agentID = OWN_AGENT, cfg = {}
     if (typeof mod?.default?.setup === "function") await mod.default.setup(safeCtx, host)
     return pending
     }
-    return { setup }
+    return { setup, ownedFiles }
+  }
+
+  // The loader is the only one that sees both the file on disk and the names the
+  // extension asked the host for, so the registry is written here, after setup
+  // has resolved: a module that never came up owns nothing.
+  const rememberOwned = (name, id, files) => {
+    if (!files || files.size === 0) return
+    const owned = readOwned()
+    owned[name] = { id, files: [...files] }
+    writeOwned(owned)
   }
 
   const flush = async (pending) => {
@@ -1186,7 +1275,9 @@ export async function loadExtensions(ctx, dataDir, agentID = OWN_AGENT, cfg = {}
       // Registration is part of loading: a surface that rejects (tool name
       // already taken, hook refused) must take the same rollback path as a
       // throwing setup, not unwind the whole plugin.
-      await flush(await begin(id, first.mod).setup())
+      const booted = begin(id, first.mod)
+      await flush(await booted.setup())
+      rememberOwned(first.name, id, booted.ownedFiles)
       if (first.commit) commitGood(first.commit)
     } catch (e) {
       const err = e?.message ?? String(e)
@@ -1203,7 +1294,9 @@ export async function loadExtensions(ctx, dataDir, agentID = OWN_AGENT, cfg = {}
       let restored = false
       if (back.mod) {
         try {
-          await flush(await begin(id, back.mod).setup())
+          const bootedBack = begin(id, back.mod)
+          await flush(await bootedBack.setup())
+          rememberOwned(first.name, id, bootedBack.ownedFiles)
           restored = true
         } catch (e2) {
           extensionReport(id, `last-good copy failed to register too: ${e2?.message ?? e2}`)

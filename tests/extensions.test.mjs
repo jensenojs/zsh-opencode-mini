@@ -342,6 +342,54 @@ function delta(ext, sid, dInput, dRead) {
   rmSync(dataDir, { recursive: true, force: true })
 }
 
+// --- uninstalling an extension takes its state with it ----------------------
+{
+  const cfgDir = mkdtempSync(join(tmpdir(), "zom-ext-uninstall-"))
+  const dataDir = mkdtempSync(join(tmpdir(), "zom-ext-uninstalldata-"))
+  mkdirSync(join(cfgDir, "extensions"))
+  writeFileSync(join(cfgDir, "config.toml"), '[shell]\nbinary = "x"\n')
+  const file = join(cfgDir, "extensions", "keeper.js")
+  writeFileSync(
+    file,
+    `export default { id: "zom-keeper", setup(ctx, host) {\n` +
+      `  host.storage("zom-keeper").set({ n: 1 })\n` +
+      `  host.kv.set("seen", 1)\n` +
+      `  ctx.session.hook("context", () => {})\n` +
+      `} }`,
+  )
+  // A shared channel is named after no extension, so an uninstall must leave it.
+  const shared = join(dataDir, "outbox.jsonl")
+  writeFileSync(shared, "record\n")
+
+  const prevCfg = process.env.ZOM_CONFIG
+  process.env.ZOM_CONFIG = join(cfgDir, "config.toml")
+  const first = makeCtx()
+  await loadExtensions(first.ctx, dataDir)
+  check("storage file exists while installed", existsSync(join(dataDir, "zom-keeper.json")))
+  check("kv file exists while installed", existsSync(join(dataDir, "zom-keeper.kv.json")))
+  check(
+    "rollback artifacts exist while installed",
+    readdirSync(join(dataDir, "ext-good")).some((f) => f.startsWith("keeper.")),
+  )
+
+  // Exactly what the installer does to an extension removed from the mirror.
+  unlinkSync(file)
+  const second = makeCtx()
+  await loadExtensions(second.ctx, dataDir)
+  check("storage file removed with the extension", !existsSync(join(dataDir, "zom-keeper.json")))
+  check("kv file removed with the extension", !existsSync(join(dataDir, "zom-keeper.kv.json")))
+  check(
+    "rollback artifacts removed with the extension",
+    !readdirSync(join(dataDir, "ext-good")).some((f) => f.startsWith("keeper.")),
+  )
+  check("shared channel survives an uninstall", existsSync(shared))
+  const owned = JSON.parse(readFileSync(join(dataDir, "ext-owned.json"), "utf8"))
+  check("registry forgets the uninstalled extension", !("keeper.js" in owned))
+  process.env.ZOM_CONFIG = prevCfg
+  rmSync(cfgDir, { recursive: true, force: true })
+  rmSync(dataDir, { recursive: true, force: true })
+}
+
 // --- rolling upgrade: a broken version rolls back, once ---------------------
 {
   const cfgDir = mkdtempSync(join(tmpdir(), "zom-ext-roll-"))
