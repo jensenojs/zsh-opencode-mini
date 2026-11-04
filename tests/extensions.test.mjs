@@ -8,6 +8,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, unlink
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import stateWatch from "../extensions/state-watch.js"
+import idleCompact from "../extensions/idle-compact.js"
 import sessionTitle from "../extensions/session-title.js"
 import { loadExtensions, trimTailFile } from "../companion.js"
 
@@ -388,6 +389,51 @@ function delta(ext, sid, dInput, dRead) {
   process.env.ZOM_CONFIG = prevCfg
   rmSync(cfgDir, { recursive: true, force: true })
   rmSync(dataDir, { recursive: true, force: true })
+}
+
+// --- idle compaction: only the mini's own conversation ----------------------
+{
+  const { ctx } = makeCtx()
+  const reports = []
+  const compacted = []
+  const prompts = []
+  const sessions = {
+    ses_root: { sessionID: "ses_root", agent: "mini" },
+    ses_child: { sessionID: "ses_child", agent: "mini", parentID: "ses_root" },
+    ses_other: { sessionID: "ses_other", agent: "build" },
+  }
+  const listeners = []
+  const host = {
+    agent: "mini",
+    // 12ms of idleness: same policy as the 30-minute default, just observable.
+    config: { idleCompact: { idleMinutes: 0.0002 } },
+    report: (msg) => reports.push(msg),
+    onUsageDelta: (cb) => listeners.push(cb),
+    compactionPrompt: (text) => prompts.push(text),
+    session: {
+      get: async (sessionID) => sessions[sessionID],
+      compact: async (sessionID) => compacted.push(sessionID),
+    },
+  }
+  await idleCompact.setup(ctx, host)
+  check("compaction instruction is registered", prompts.length === 1)
+  check("instruction drops finished work", prompts[0].includes("Drop the process of finished tasks"))
+
+  listeners[0]({ sid: "ses_root" })
+  await new Promise((r) => setTimeout(r, 60))
+  check("an idle root session is compacted", compacted.length === 1 && compacted[0] === "ses_root")
+
+  // Compaction reports usage of its own; the quiet window keeps that from
+  // arming the next one without the user ever sending a prompt.
+  listeners[0]({ sid: "ses_root" })
+  await new Promise((r) => setTimeout(r, 60))
+  check("compaction does not repeat inside the quiet window", compacted.length === 1)
+
+  listeners[0]({ sid: "ses_child" })
+  listeners[0]({ sid: "ses_other" })
+  await new Promise((r) => setTimeout(r, 60))
+  check("subagent and other-agent sessions are not compacted", compacted.length === 1)
+  check("no host problems reported", reports.length === 0)
 }
 
 // --- rolling upgrade: a broken version rolls back, once ---------------------

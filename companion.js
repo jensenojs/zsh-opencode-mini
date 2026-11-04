@@ -1178,13 +1178,32 @@ export async function loadExtensions(ctx, dataDir, agentID = OWN_AGENT, cfg = {}
     // against, so compile and fire cannot drift apart. Extensions cannot
     // import it — they run from a staged copy and relative imports break.
     render: (template, slots) => renderTemplate(template, slots),
-    // The one session mutation the app needs: an empty title asks the server
-    // to regenerate from history, the same semantics as the HTTP endpoint.
-    // Everything else on ctx.session stays out of reach — an extension that
-    // could rename or switch agents freely would be a second policy owner.
+    // The session mutations an extension may need, each one a call the host owns:
+    // an extension that could rewrite a session freely would be a second policy
+    // owner. retitle regenerates a title; get is the read-back a policy module
+    // needs to tell the mini's own conversation from a subagent's; compact runs
+    // the server's own compaction path, queued so it cannot steer a running step.
     session: {
       retitle: (sessionID, title) => ctx.session.update({ sessionID, title }),
+      get: (sessionID) => ctx.session.get({ sessionID }),
+      compact: (sessionID) => ctx.session.compact({ sessionID, delivery: "queue" }),
     },
+    // The summarizer's instructions ride the compaction request, and a hook may
+    // only be mutated by the host (extension views are frozen). Register once per
+    // extension and only for this host's agent.
+    compactionPrompt: (() => {
+      let registered = false
+      return (text) => {
+        if (registered || typeof text !== "string" || !text.trim()) return
+        registered = true
+        pending.push(() =>
+          ctx.session.hook("compaction", (event) => {
+            if (event.agent !== agentID) return
+            event.system = [...(event.system ?? []), { type: "text", text }]
+          }),
+        )
+      }
+    })(),
     // Durable counters: rate gates need to survive a restart. Backed by the
     // same atomic JSON store as host.storage. update() is the read-modify-write
     // gate: two callers in sequence cannot both see "one slot left", and a
