@@ -87,9 +87,7 @@ channel is a different, empty database — history appears to vanish.
 | `ctrl+z` (in mini) | quit mini cleanly, same as hiding with `C-x`; summon again with `C-x` |
 | other unbound keys (in mini) | handed back to the shell, e.g. `ctrl+o` runs at the zsh prompt |
 | `zom [args]` | scriptable launcher |
-| `zom-last` | send the last failed command to `opencode run` |
-| `zom-bg <prompt>` | long-running background session; completion notice arrives as a `zom:` line |
-| `zom: <text>` | delivery lines (recipes / bg notices) printed before your prompt |
+| `zom: <text>` | recipe results printed before your prompt |
 | `zom-config` | print every knob with its effective value and origin (read-only) |
 
 After a failed command, the composer comes pre-filled with an analysis
@@ -119,7 +117,7 @@ Optional. Copy [`config.example.toml`](config.example.toml) to
 | `companion.failureTtlSeconds` | `600` | how long a failure stays "fresh" for the AI |
 | `companion.recentDefaultN` | `20` | lines `zom_context` returns for `query=recent` |
 | `companion.repeatFailureThreshold` | `3` | identical failures of one command within a day that trigger one outbox hint (`0` disables) |
-| `recipes.<name>` (top level) | (none) | declarative model calls on events (`failure` / `bg-done` / `manual`); the name must match `^[A-Za-z0-9_-]+$`; see the example config |
+| `recipes.<name>` (top level) | (none) | declarative model calls on events (`failure` / `manual`); the name must match `^[A-Za-z0-9_-]+$`; see the example config |
 
 Config is read once when the plugin loads; open a new shell after editing.
 Run `zom-config` to see everything in effect (including the parts installed
@@ -155,14 +153,13 @@ under `~/.config/opencode/`); the plugin never writes configuration.
 ### Spawn hooks
 
 Functions or executables registered in `ZOM_SPAWN_HOOKS+=(fn)` run before
-every opencode spawn (`zom` widget / `zom-bg` / `zom-last`). The plugin owns
-the spawn facts; the hook decides what to do with them. Each call receives
-exported env vars (external executables inherit them, zsh functions see them
-for the duration of the call):
+the opencode spawn (`zom` / `C-x`). The plugin owns the spawn facts; the hook
+decides what to do with them. Each call receives exported env vars (external
+executables inherit them, zsh functions see them for the duration of the
+call):
 
-- `ZOM_HOOK_KIND`: `mini`, `bg`, or `last`
-- `ZOM_HOOK_SID`: session id when known at hook time (always for `bg`;
-  for `mini` only with `resume: "main"`; empty otherwise)
+- `ZOM_HOOK_KIND`: `mini`
+- `ZOM_HOOK_SID`: the main session id with `resume: "main"`; empty otherwise
 - `ZOM_HOOK_CWD`: the directory the spawn happens in
 
 Hooks inherit the real terminal on stdin (the summon widget's stdin is not

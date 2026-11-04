@@ -24,7 +24,6 @@
 #         payload round-trips to the same JSON
 #   Launcher (mock opencode-zom in tests/bin):
 #     S6  zom: mock receives `mini -c --agent mini`
-#     S7  zom-last: prompt contains the recorded failing command
 #   Configuration (config.toml, the single config file):
 #     S8  keybind: default ^X bound; keybind:"" in config suppresses it
 #     S9  dataDir: config-provided dataDir is honored (incl. ~ expansion)
@@ -36,23 +35,17 @@
 #         shell alive
 #     S13 broken config: one loud warning, defaults take effect
 #     S14 concurrent recording: two shells, 200 commands each, no torn lines
-#     S15 zom-last with no failure on record: hint + exit 1 + nothing sent
 #     S16 outbox byte-cursor drain: deliver, advance, no repeat, partial
 #         tail line waits for completion
-#     S17 zom-bg: sid, ledger, background run -s (never --standalone),
-#         empty-prompt rejection
 #     S35 stderr tail capture: failure signal carries the bounded tail (ESC
 #         stripped, jq-valid), capture off -> empty field, success still
 #         flushes, over-cap log truncated after one command
-#     S36 bg-done drain skip: outbox records injected by the companion
-#         (bg-injected.json within TTL) are consumed silently, cursor still
-#         advances, stale markers deliver
 #     S37 stderr dual mode: reachable pane -> scrollback fetch (no tee, no
 #         log), dead pane / no wezterm / no TTY -> tee or empty; mode picked
 #         once at source; pane+tty stamped on failure records
 #     S38 failure tty scope: a success in one terminal must not flush or
-#         surface another terminal's failure (prefill, zom-last); legacy
-#         no-tty records stay global-latest on read and flush
+#         surface another terminal's failure (prefill); legacy no-tty records
+#         stay global-latest on read and flush
 #     S39 hook registration: file-mode scripts dispatch phantom preexecs per
 #         line (empty $1) — the plugin ignores them, the recorded cmd
 #         survives; hook arrays are idempotent under double sourcing
@@ -358,16 +351,6 @@ EOF
   cleanup
 }
 
-t_S7_zom_last() {
-  sandbox
-  run_command 'git push --force' 'false'
-  local out
-  out=$(run_zsh 'zom-last' 2>/dev/null)
-  assert_contains "S7 prompt carries failed cmd" "$out" "git push --force"
-  assert_contains "S7 went through opencode run" "$(cat "$ZOM_MOCK_LOG")" "argv=run"
-  cleanup
-}
-
 t_S8_keybind() {
   sandbox
   # default: ^X bound to the widget. Probe the keymap via bindkey's text
@@ -490,17 +473,6 @@ t_S14_concurrent_append() {
   cleanup
 }
 
-t_S15_zom_last_empty() {
-  # no failure on record: stderr hint, non-zero exit, nothing sent to opencode
-  sandbox
-  local out rc
-  out=$(run_zsh 'zom-last' 2>&1) && rc=0 || rc=$?
-  assert_contains "S15 stderr hint" "$out" "no failed command on record"
-  assert_eq "S15 returns 1" "$rc" "1"
-  assert_eq "S15 nothing sent to opencode" "$(cat "$ZOM_MOCK_LOG")" ""
-  cleanup
-}
-
 t_S16_outbox_cursor() {
   # outbox drain: full lines deliver as pre-prompt hints, the cursor advances
   # past consumed bytes, a partial trailing line waits, a second drain with
@@ -508,12 +480,12 @@ t_S16_outbox_cursor() {
   sandbox
   mkdir -p "$DD"   # the fixture writes before any plugin source creates the dir
   print -r -- '{"id":"a","kind":"recipe","text":"first suggestion"}' > "$DD/outbox.jsonl"
-  print -r -- '{"id":"b","kind":"bg-done","sid":"ses_zom-bg-x","ok":true,"text":"background session finished"}' >> "$DD/outbox.jsonl"
+  print -r -- '{"id":"b","kind":"recipe","text":"second suggestion"}' >> "$DD/outbox.jsonl"
   print -rn -- '{"id":"c","kind":"recipe","te' >> "$DD/outbox.jsonl"
   local out
   out=$(run_zsh '__zom_outbox_drain' 2>&1)
   assert_contains "S16 first record delivered"  "$out" "zom: first suggestion"
-  assert_contains "S16 bg-done text delivered"  "$out" "zom: background session finished"
+  assert_contains "S16 second record delivered" "$out" "zom: second suggestion"
   # cursor sits at the end of the last complete line, strictly before EOF:
   # the partial tail line stays unconsumed for the next drain
   local expect after_partial size
@@ -552,40 +524,6 @@ t_S16_outbox_malformed() {
   cursor=$(cat "$DD/outbox.cursor")
   size=$(run_zsh "zstat +size '$DD/outbox.jsonl'")
   assert_eq "S16b cursor at EOF (all lines complete)" "$cursor" "$size"
-  cleanup
-}
-
-t_S17_zom_bg() {
-  # zom-bg spawns `opencode run -s <sid>` in the background (never
-  # --standalone: the session must stay reachable by mini), writes the
-  # spawn ledger, prints the sid, and rejects an empty prompt
-  sandbox
-  local out
-  out=$(run_zsh 'zom-bg "fix the flaky test"' 2>&1)
-  assert_contains "S17 sid printed" "$out" "ses_zom-bg-"
-  assert_contains "S17 attach hint" "$out" "opencode mini -s ses_zom-bg-"
-  local sid
-  sid=$(print -r -- "$out" | grep -o 'ses_zom-bg-[0-9]*-[0-9]*' | head -n1)
-  local ledger
-  ledger=$(cat "$DD/bg.jsonl")
-  assert_contains "S17 ledger records sid" "$ledger" "\"sid\":\"$sid\""
-  assert_contains "S17 ledger has pid+started" "$ledger" '"pid":'
-  assert_contains "S17 ledger has started" "$ledger" '"started":'
-  # the run is backgrounded; wait for the mock binary to log its argv. The
-  # budget must absorb a loaded machine (fork+exec of a fresh zsh can take
-  # seconds under heavy load), not a fresh one — 20s, still bounded.
-  local tries=0
-  while (( tries < 200 )) && ! grep -q "argv=run" "$ZOM_MOCK_LOG" 2>/dev/null; do
-    sleep 0.1
-    tries=$(( tries + 1 ))
-  done
-  assert_contains "S17 run invoked with -s and prompt" "$(cat "$ZOM_MOCK_LOG")" \
-    "argv=run -s $sid fix the flaky test"
-  assert_eq "S17 no --standalone" "$(grep -c -- --standalone "$ZOM_MOCK_LOG" || true)" "0"
-  local rc
-  out=$(run_zsh 'zom-bg' 2>&1) && rc=0 || rc=$?
-  assert_contains "S17 empty prompt rejected" "$out" "usage: zom-bg"
-  assert_eq "S17 empty prompt returns 1" "$rc" "1"
   cleanup
 }
 
@@ -778,21 +716,7 @@ t_S24_regression_fixes() {
   assert_contains "S24 prefill keeps double spaces" "$out" 'echo  a   b'
   cleanup
 
-  # 3) zom-last applies the same freshness rules as the prefill: stale
-  #    records and failures from another directory are rejected.
-  sandbox
-  mkdir -p "$DD"
-  printf '{"ts":"t","epoch":1,"cwd":%s,"exit":1,"cmd":"old-cmd"}\n' \
-    "$(jq -Rn --arg s "$PWD" '$s')" > "$DD/last-failure.json"
-  out=$(run_zsh 'zom-last' 2>&1) || true
-  assert_contains "S24 zom-last stale rejected" "$out" 'stale'
-  printf '{"ts":"t","epoch":%d,"cwd":"/somewhere/else","exit":1,"cmd":"other-cmd"}\n' \
-    "$now" > "$DD/last-failure.json"
-  out=$(run_zsh 'zom-last' 2>&1) || true
-  assert_contains "S24 zom-last wrong cwd rejected" "$out" 'not here'
-  cleanup
-
-  # 4) Spawn hooks run with stdin reconnected to /dev/tty (a ZLE widget's
+  # 3) Spawn hooks run with stdin reconnected to /dev/tty (a ZLE widget's
   #    stdin is not a tty; hooks probing the terminal would misfire). In a
   #    test shell there is no tty at all — the hook must still run and its
   #    failure must not abort the spawn path.
@@ -848,31 +772,19 @@ t_S26_unclaimed_hint() {
   cleanup
 }
 
-# S27: spawn hooks receive the spawn context; zom-bg's hook-visible sid is the
-# real spawned sid (wezterm-attention binds background activity with it).
+# S27: spawn hooks receive the spawn context (kind, session id, cwd); the only
+# spawn point is the mini launcher, which exposes the main session id when it
+# resumes it.
 t_S27_hook_context() {
   sandbox
-  run_zsh 'zsh_hook_probe() { print -r -- "$ZOM_HOOK_KIND|$ZOM_HOOK_SID|$ZOM_HOOK_CWD" >> "'$DD'/hooks.txt" }
-    ZOM_SPAWN_HOOKS=(zsh_hook_probe)
-    zom-bg "say hi"'
-  local bg_line hook_sid spawn_sid tries=0
-  while (( tries < 200 )) && ! grep -q "argv=run" "$ZOM_MOCK_LOG" 2>/dev/null; do
-    sleep 0.1
-    tries=$(( tries + 1 ))
-  done
-  bg_line=$(grep '^bg|' "$DD/hooks.txt")
-  hook_sid=${bg_line#bg|}; hook_sid=${hook_sid%%|*}
-  spawn_sid=$(grep -o 'ses_zom-bg-[0-9-]*' "$ZOM_MOCK_LOG" | head -n1)
-  assert_eq "S27 hook sid equals spawned sid" "$hook_sid" "$spawn_sid"
-  assert_contains "S27 hook sees cwd" "$bg_line" "|$PWD"
-  # mini path with resume=main exposes the dedicated main session id
   write_config <<'EOF'
 {"shell":{"resume":"main"}}
 EOF
-  run_zsh 'zsh_hook_probe() { print -r -- "$ZOM_HOOK_KIND|$ZOM_HOOK_SID" >> "'$DD'/hooks2.txt" }
+  run_zsh 'zsh_hook_probe() { print -r -- "$ZOM_HOOK_KIND|$ZOM_HOOK_SID|$ZOM_HOOK_CWD" >> "'$DD'/hooks.txt" }
     ZOM_SPAWN_HOOKS=(zsh_hook_probe)
     __zom_launch_mini >/dev/null 2>&1'
-  assert_eq "S27 mini resume=main exposes main sid" "$(cat "$DD/hooks2.txt")" "mini|$(cat "$SD/main-session")"
+  assert_eq "S27 hook sees kind, main sid and cwd" \
+    "$(<"$DD"/hooks.txt)" "mini|$(<"$SD"/main-session)|$PWD"
   cleanup
 }
 
@@ -885,13 +797,9 @@ t_S28_external_hook() {
 print -r -- "$ZOM_HOOK_KIND|$ZOM_HOOK_SID" >> "$ZOM_TEST_HOOK_OUT"
 EOF
   chmod +x "$TD/ext-hook"
-  ZOM_TEST_HOOK_OUT="$DD/ext.txt" run_zsh 'ZOM_SPAWN_HOOKS=("'"$TD"'/ext-hook"); zom-bg "hi"'
-  local tries=0
-  while (( tries < 200 )) && [[ ! -s "$DD/ext.txt" ]]; do
-    sleep 0.1; tries=$(( tries + 1 ))
-  done
-  assert_contains "S28 external hook ran with kind" "$(cat "$DD/ext.txt")" "bg|"
-  assert_contains "S28 external hook got sid" "$(cat "$DD/ext.txt")" "ses_zom-bg-"
+  ZOM_TEST_HOOK_OUT="$DD/ext.txt" run_zsh 'ZOM_SPAWN_HOOKS=("'"$TD"'/ext-hook"); __zom_launch_mini >/dev/null 2>&1'
+  assert_contains "S28 external hook ran with kind" "$(<"$DD"/ext.txt)" "mini|"
+  assert_contains "S28 external hook got main sid" "$(<"$DD"/ext.txt)" "|$(<"$SD"/main-session)"
   cleanup
 }
 
@@ -915,15 +823,15 @@ t_S30_notices() {
   mkdir -p "$DD"
   run_zsh 'failing_hook() { return 7 }
     ZOM_SPAWN_HOOKS=(failing_hook)
-    zom-bg "one"
-    zom-bg "two"'
+    __zom_run_spawn_hooks mini
+    __zom_run_spawn_hooks mini'
   local nf="$DD/notices.jsonl"
   [[ -f "$nf" ]] || { (( FAIL++ )); print -r -- "  FAIL  S30 notice written: file missing"; cleanup; return }
   local lines
   lines=$(grep -c 'hook-failure' "$nf")
   assert_eq "S30 hook failure deduped per shell" "$lines" "1"
   assert_contains "S30 notice names hook and rc" "$(cat "$nf")" 'failing_hook exited 7'
-  assert_contains "S30 notice carries kind" "$(cat "$nf")" 'kind=bg'
+  assert_contains "S30 notice carries kind" "$(<"$nf")" 'kind=mini'
   # sentinel notice beside the stderr warning
   dd if=/dev/zero of="$DD/history-2026-10.jsonl" bs=1048576 count=11 2>/dev/null
   run_zsh ':'
@@ -935,12 +843,12 @@ t_S30_notices() {
 t_S31_spawn_measurement() {
   sandbox
   mkdir -p "$DD"
-  run_zsh 'zom-bg "one"
-    zom-bg "two"'
+  run_zsh '__zom_run_spawn_hooks mini
+    __zom_run_spawn_hooks mini'
   local sf="$DD/spawns.jsonl"
   [[ -f "$sf" ]] || { (( FAIL++ )); print -r -- "  FAIL  S31 spawns.jsonl written: file missing"; cleanup; return }
   assert_eq "S31 one line per spawn" "$(grep -c '' "$sf")" "2"
-  assert_eq "S31 kind recorded" "$(grep -c '"kind":"bg"' "$sf")" "2"
+  assert_eq "S31 kind recorded" "$(grep -c '"kind":"mini"' "$sf")" "2"
   # summon identity: tty + cwd stamp (companion reads this back as "which
   # shell summoned"); the sandbox shell has no TTY, so the field is empty
   local head1
@@ -977,11 +885,11 @@ t_S33_hook_stdin_tty() {
   print -r -- "REALTTY-MARK" > "$TD/fake-tty"
   run_zsh 'zsh_hook_stdin() { cat > "'$DD'/stdin.txt" }
     TTY="'$TD'/fake-tty" ZOM_SPAWN_HOOKS=(zsh_hook_stdin)
-    zom-bg "hi"' </dev/null
+    __zom_run_spawn_hooks mini' </dev/null
   assert_eq "S33 hook stdin comes from TTY" "$(cat "$DD/stdin.txt")" "REALTTY-MARK"
   run_zsh 'zsh_hook_stdin() { cat > "'$DD'/stdin2.txt" }
     TTY="'$TD'/gone" ZOM_SPAWN_HOOKS=(zsh_hook_stdin)
-    zom-bg "hi"' </dev/null
+    __zom_run_spawn_hooks mini' </dev/null
   assert_eq "S33 unusable TTY falls back to inherited stdin" "$(cat "$DD/stdin2.txt")" ""
   cleanup
 }
@@ -1044,36 +952,6 @@ EOF
   size=$(run_zsh "zstat +size '$DD/stderr-tail.log'")
   (( size <= 262144 )) \
     && ok "S35 over-cap log truncated" || bad "S35 over-cap log truncated" "size=$size"
-  cleanup
-}
-
-# S36: bg-done drain skip — outbox records whose sid the companion injected
-# into a live session (bg-injected.json, epoch within the failure TTL) are
-# consumed silently; other records and stale markers still print; the cursor
-# advances past every complete line either way.
-t_S36_drain_bg_skip() {
-  sandbox
-  mkdir -p "$DD"
-  print -r -- '{"id":"a","kind":"recipe","text":"normal hint"}' > "$DD/outbox.jsonl"
-  print -r -- '{"id":"b","kind":"bg-done","sid":"ses_zom-bg-injected","ok":true,"text":"bg injected finished"}' >> "$DD/outbox.jsonl"
-  print -r -- '{"id":"c","kind":"bg-done","sid":"ses_zom-bg-fresh","ok":true,"text":"bg fresh finished"}' >> "$DD/outbox.jsonl"
-  local epoch
-  epoch=$(run_zsh 'print -r -- $EPOCHSECONDS')
-  printf '{"ses_zom-bg-injected":%s}\n' "$epoch" > "$DD/bg-injected.json"
-  local out
-  out=$(run_zsh '__zom_outbox_drain' 2>&1)
-  assert_contains "S36 recipe line delivered"     "$out" "zom: normal hint"
-  assert_contains "S36 non-injected bg delivered" "$out" "zom: bg fresh finished"
-  assert_not_contains "S36 injected bg skipped"   "$out" "bg injected finished"
-  local cursor size
-  cursor=$(cat "$DD/outbox.cursor")
-  size=$(run_zsh "zstat +size '$DD/outbox.jsonl'")
-  assert_eq "S36 cursor past skipped line" "$cursor" "$size"
-  # a stale marker (epoch far outside the TTL) no longer silences
-  printf '{"ses_zom-bg-fresh":1}\n' > "$DD/bg-injected.json"
-  print -r -- '{"id":"d","kind":"bg-done","sid":"ses_zom-bg-fresh","ok":true,"text":"bg fresh again"}' >> "$DD/outbox.jsonl"
-  out=$(run_zsh '__zom_outbox_drain' 2>&1)
-  assert_contains "S36 stale marker still delivers" "$out" "zom: bg fresh again"
   cleanup
 }
 
@@ -1142,8 +1020,8 @@ EOF
 
 # S38: failure signals are terminal-scoped. Two concurrent shells (different
 # $TTY) share one data dir: a success in shell B must not flush shell A's
-# live failure, B must not prefill or zom-last over A's failure, and the
-# owner still can. Legacy records (no tty field) and tty-less shells keep
+# live failure and B must not prefill over A's failure, while the owner
+# still can. Legacy records (no tty field) and tty-less shells keep
 # the old global-latest behaviour on both the read and the flush side.
 t_S38_failure_tty_scope() {
   sandbox
@@ -1159,17 +1037,13 @@ t_S38_failure_tty_scope() {
   run_as_tty "$TD/tty-b" "__zom_preexec 'ok-b'; true; __zom_precmd"
   assert_file_exists "$f" "S38 other pane's success keeps signal"
   assert_contains "S38 signal intact" "$(cat "$f")" '"cmd":"fail-a"'
-  # B cannot see it: no prefill, zom-last refuses; A proceeds
+  # B cannot see it: no prefill; the owner still gets it
   run_as_tty "$TD/tty-b" 'zom x' >/dev/null 2>&1
   local log
-  log=$(cat "$ZOM_MOCK_LOG")
+  log=$(<"$ZOM_MOCK_LOG")
   assert_not_contains "S38 foreign prefill suppressed" "$log" "--prefill"
-  local out
-  out=$(run_as_tty "$TD/tty-b" 'zom-last' 2>&1 || true)
-  assert_contains "S38 foreign zom-last refuses" "$out" "another terminal"
-  assert_not_contains "S38 foreign zom-last sends nothing" "$(cat "$ZOM_MOCK_LOG")" "Explain and fix"
-  run_as_tty "$TD/tty-a" 'zom-last' >/dev/null 2>&1 || true
-  assert_contains "S38 owner zom-last proceeds" "$(cat "$ZOM_MOCK_LOG")" "Explain and fix"
+  run_as_tty "$TD/tty-a" 'zom x' >/dev/null 2>&1
+  assert_contains "S38 owner prefill delivered" "$(<"$ZOM_MOCK_LOG")" "--prefill"
   # B fails; A's success must not flush B's signal
   run_as_tty "$TD/tty-b" "__zom_preexec 'fail-b'; false; __zom_precmd"
   run_as_tty "$TD/tty-a" "__zom_preexec 'ok-a'; true; __zom_precmd"
@@ -1343,17 +1217,17 @@ t_S43_zom_update() {
 }
 
 for t in t_S1_recording t_S2_escaping t_S3_failure_signal t_S4_datetime_selfload \
-         t_S5_osc_frame t_S6_zom_launch t_S7_zom_last t_S8_keybind \
+         t_S5_osc_frame t_S6_zom_launch t_S8_keybind \
          t_S9_config_dataDir t_S10_companion_contract t_S10b_extensions_suite \
          t_S11_keybind_conflict \
          t_S12_err_return_survival t_S13_broken_config t_S14_concurrent_append \
-         t_S15_zom_last_empty t_S16_outbox_cursor t_S16_outbox_malformed t_S17_zom_bg \
+         t_S16_outbox_cursor t_S16_outbox_malformed \
          t_S18_zom_config t_S19_agent_prompt_seed t_S20_widget_always_cold_start t_S21_resource_idempotent \
          t_S22_argv_probe t_S23_sequence_conflict t_S24_regression_fixes \
          t_S25_history_retention t_S26_unclaimed_hint t_S27_hook_context \
          t_S28_external_hook t_S29_size_sentinel t_S30_notices t_S31_spawn_measurement \
          t_S32_prefill_consumed_once t_S33_hook_stdin_tty t_S34_osc_switch \
-         t_S35_stderr_tail t_S36_drain_bg_skip t_S37_stderr_dual_mode \
+         t_S35_stderr_tail t_S37_stderr_dual_mode \
          t_S38_failure_tty_scope t_S39_hook_registration \
          t_S41_crash_restore t_S42_install_probe t_S43_zom_update; do
   print -r -- "[$t]"

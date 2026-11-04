@@ -35,7 +35,7 @@ never touches the prompt. Uninstall = delete the source line.
 │           └─► OSC 7777;zom;v1;<b64>─┼─► wezterm fork, hole 1 (future)         │
 │                                     │     │                                     │
 │  precmd ◄─── outbox.jsonl ──────────┼─────┤  recipes fire on failure /          │
-│  (byte cursor; one `zom: <text>`    │◄────┤  bg-done / manual; the outbox is    │
+│  (byte cursor; one `zom: <text>`    │◄────┤  manual; the outbox is              │
 │   hint line before next prompt)     │     │  the plugin→shell return channel    │
 │                                     │     │                                     │
 │  C-x ─► opencode mini ─────────────────────► inject ONE line; else silence     │
@@ -90,9 +90,9 @@ model, and delivers the result:
 
 | Field | Meaning |
 |---|---|
-| `on` | event source: `failure` (failed shell command), `bg-done` (background session finished), or `manual` (agent gets a `zom_recipe_<name>` tool) |
+| `on` | event source: `failure` (failed shell command) or `manual` (agent gets a `zom_recipe_<name>` tool) |
 | `model` | `provider/model-id` that runs the prompt |
-| `prompt` | template; `{cmd}` `{exit}` `{cwd}` (`failure`), `{sid}` `{cwd}` (`bg-done`) are filled from the event |
+| `prompt` | template; `{cmd}` `{exit}` `{cwd}` are filled from the event, plus `{stderr}` for `failure` |
 | `deliver` | `outbox` (one `zom:` hint line before your next prompt) or `next-session` (injected into the next mini session, expires after `ttlSeconds`) |
 | `exitFilter` | optional array of exit codes to fire on (omit = all) |
 | `ratePerHour` | optional cap on model calls per hour (omit = unlimited) |
@@ -209,7 +209,7 @@ zsh-opencode-mini/
 ├── README.md                       # this file (source of truth)
 ├── README.zh-CN.md                 # Chinese translation (follows English)
 ├── config.example.toml            # annotated config template (copy to ~/.config/zsh-opencode-mini/)
-├── zsh-opencode-mini.plugin.zsh    # zsh side: record + signal + OSC + outbox drain + zom-bg + launcher
+├── zsh-opencode-mini.plugin.zsh    # zsh side: record + signal + OSC + outbox drain + spawn hooks + launcher
 ├── agent.example.md                # agent prompt template, seeded to <config>/agent.md
 ├── companion.js                      # opencode side: contract check + zom_context + context hook + recipes + outbox + extension host
 ├── extensions/                       # policy modules loaded by companion.js (cache-watch, state-watch)
@@ -226,8 +226,7 @@ Runtime data (separate from code):
 ├── history-YYYY-MM.jsonl        # monthly command history, append-only
 ├── last-failure.json            # most recent non-zero-exit command (atomically replaced)
 ├── outbox.jsonl                 # plugin→shell messages (opencode side appends)
-├── outbox.cursor                # shell's byte cursor into outbox.jsonl (zsh side only)
-└── bg.jsonl                     # background sessions launched by zom-bg
+└── outbox.cursor                # shell's byte cursor into outbox.jsonl (zsh side only)
 ```
 
 ## Install
@@ -323,14 +322,9 @@ is printed once (the `zom` function still works) — rebind via
   messages (default 50, upstream default 200) — or none at all with
   `replay: "off"` (`--no-replay`); the session itself keeps its full history
 - `zom` — scriptable launcher, forwards extra args to mini
-- `zom-last` — hand the last failed command to `opencode run`, no TUI
-- `zom-bg <prompt>` — spawn a long-running `opencode run` in the background;
-  prints the session id and an attach command. When the session goes idle,
-  the companion plugin drops a `zom: background session <sid> finished`
-  notice into the outbox, so you see it before your next prompt
 - `zom: <text>` lines before your prompt — outbox deliveries from recipes
-  and `zom-bg` (each tagged with its provenance; the agent treats them as
-  plugin suggestions, not your words)
+  (each tagged with its provenance; the agent treats them as plugin
+  suggestions, not your words)
 - in any opencode session with this plugin: ask the agent `zom_context`
   things — "why did that fail", "what did I run earlier today"
 - the same session is reachable from the full TUI on purpose: mini is a thin
@@ -359,7 +353,7 @@ ESC ] <code> ; zom ; v1 ; <base64(json)> BEL
 
 | | zsh-kimi-cli | zsh-opencode-mini |
 |---|---|---|
-| Interaction | C-x fullscreen switch to kimi CLI | same shape (C-x → mini) + `zom-last` |
+| Interaction | C-x fullscreen switch to kimi CLI | same shape (C-x → mini) |
 | Scene awareness | none | cwd/git via tools, zero injection |
 | History awareness | none | lazy: `zom_context` + freshness heuristics |
 | Runtime | kimi CLI, locked | opencode (sessions, model choice, custom agents/tools, MCP) |
@@ -373,20 +367,11 @@ data layer final, leave the rendering layer to the fork.
 
 ## Known limits
 
-- `zom-last` needs `jq`
 - commands run inside opencode/TUIs do not pass through zsh hooks — they never
   enter the store (no self-referential pollution)
 - the failure-signal heuristic is per-host and per-user; concurrent shells
   overwrite `last-failure.json` (last writer wins) — fine for a single
   developer, revisit if you fan out
-- background sessions are never reaped: `zom-bg` only appends to `bg.jsonl`,
-  and session cleanup is left to the platform (not yet verified) — the ledger
-  grows unbounded for now
-- `zom-bg` completion notices fire on `session.execution.succeeded` (verified
-  against a real runtime, opencode 2.0.21, 2026-10-01); the paired
-  `session.execution.failed` event's data shape is unverified — a failed
-  background session is reported with `ok:false` only when its `sessionID`
-  is readable, otherwise it stays silent
 - an unparsable line in `outbox.jsonl` is skipped with a warning and the
   cursor advances past it — one bad line never blocks the drain, but its
   content is lost

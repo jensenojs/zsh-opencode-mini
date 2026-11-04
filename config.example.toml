@@ -134,8 +134,6 @@ autoTitleIdleMinutes = 54
 #
 # Per-recipe fields:
 #   on          "failure" (a failed shell command was recorded)
-#               | "bg-done" (a background session spawned via zom-bg finished;
-#               {sid} and {cwd} are filled)
 #               | "manual"  (the agent gets a zom_recipe_<name> tool)
 #   model       "provider/model-id" — the model that runs the prompt
 #   prompt      template; {cmd} {exit} {cwd} are filled from the event, plus

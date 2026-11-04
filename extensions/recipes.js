@@ -6,7 +6,6 @@
 const TRIGGERS = {
   failure: ["cmd", "exit", "cwd", "stderr"],
   manual: ["cmd", "exit", "cwd"],
-  "bg-done": ["sid", "cwd"],
 }
 const DELIVER = ["next-session", "outbox"]
 const NAME = /^[a-zA-Z0-9_-]+$/
@@ -148,17 +147,6 @@ export default {
           cwd: sig.cwd,
           stderr: sig.stderr ?? "",
         }).catch(() => {})
-      }
-    })
-
-    host.onSessionExecution(({ sid }) => {
-      const bg = Object.entries(recipes).filter(([, r]) => r.on === "bg-done")
-      if (bg.length === 0) return
-      const ledger = host.files.bgLedger()
-      if (!ledger.has(sid)) return
-      if (!host.files.claim(`bg-${sid}`)) return
-      for (const [name, recipe] of bg) {
-        void fire(name, recipe, { sid, cwd: ledger.get(sid) ?? "" }).catch(() => {})
       }
     })
 

@@ -36,7 +36,7 @@ companion 插件消费它们（`zom_context`、失败感知、recipe 提示、�
 - 安装器只做真实复制（cmp 后刷新），不软链：opencode 的配置不能耦合到可能
   正在编辑或被删除的检出。目的地从 `XDG_CONFIG_HOME:-~/.config` 推导，与
   companion 的查找规则同源。
-- 落盘有界：新文件要么滚动（history-*.jsonl）、要么截尾（outbox/bg.jsonl）、
+- 落盘有界：新文件要么滚动（history-*.jsonl）、要么截尾（outbox.jsonl）、
   要么覆盖（last-failure.json）；往数据目录加东西必须自带盖子，并在
   `extensions/state-watch.js` 或插件内登记清理路径。
 - zsh 侧函数一律 `__zom_` 前缀；插件会在用户的交互 shell 里运行，写代码按

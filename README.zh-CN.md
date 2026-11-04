@@ -79,9 +79,7 @@ channel 决定库文件名，换了 channel 等于换了空库，历史看起来
 | `ctrl+z`（mini 内） | 干净退出 mini，与 `C-x` 收起同一条路径；再按 `C-x` 召回 |
 | 其它未绑定键（mini 内） | 交还 shell 生效，比如 `ctrl+o` 落到 zsh 提示符执行 |
 | `zom [args]` | 脚本可用的启动器 |
-| `zom-last` | 把最近失败的命令交给 `opencode run` |
-| `zom-bg <prompt>` | 后台长任务；完成通知以 `zom:` 行送达 |
-| `zom: <text>` | 送达行（recipes / 后台通知），出现在下一个提示符前 |
+| `zom: <text>` | recipe 结果，出现在下一个提示符前 |
 | `zom-config` | 打印全部配置项的生效值与来源（只读） |
 
 命令失败后，输入框会预填一条分析提示词（你确认后才发送）。AI 也能用
@@ -110,7 +108,7 @@ channel 决定库文件名，换了 channel 等于换了空库，历史看起来
 | `companion.failureTtlSeconds` | `600` | 失败信号对 AI 保持「新鲜」的秒数 |
 | `companion.recentDefaultN` | `20` | `zom_context` 工具 `query=recent` 返回的行数 |
 | `companion.repeatFailureThreshold` | `3` | 同一条命令一天内重复失败到这个次数就往 outbox 丢一条提示（`0` 关闭） |
-| `recipes.<name>`（顶层） | 空 | 事件驱动的声明式模型调用（`failure` / `bg-done` / `manual`），名字须匹配 `^[A-Za-z0-9_-]+$`，见示例配置 |
+| `recipes.<name>`（顶层） | 空 | 事件驱动的声明式模型调用（`failure` / `manual`），名字须匹配 `^[A-Za-z0-9_-]+$`，见示例配置 |
 
 配置在插件加载时读一次，改完开新 shell 生效。`zom-config` 可查看全部生效值
 （含装在 `~/.config/opencode/` 下的部件状态）；插件绝不写任何配置文件。
@@ -138,14 +136,13 @@ channel 决定库文件名，换了 channel 等于换了空库，历史看起来
 
 ### spawn 钩子
 
-在 `ZOM_SPAWN_HOOKS+=(fn)` 里登记的 zsh 函数或可执行文件会在每次
-opencode 拉起前运行（`zom` 按键 / `zom-bg` / `zom-last`）。插件负责提供
-spawn 现场的事实，钩子决定拿这些事实做什么。每次调用通过环境变量传值
-（可执行文件直接继承环境，zsh 函数在调用期间可见）：
+在 `ZOM_SPAWN_HOOKS+=(fn)` 里登记的 zsh 函数或可执行文件会在 opencode
+拉起前运行（`zom` / `C-x`）。插件负责提供 spawn 现场的事实，钩子决定拿这些
+事实做什么。每次调用通过环境变量传值（可执行文件直接继承环境，zsh 函数在
+调用期间可见）：
 
-- `ZOM_HOOK_KIND`：`mini`、`bg` 或 `last`
-- `ZOM_HOOK_SID`：钩子时刻已知的 session id（`bg` 一定有；`mini` 仅在
-  `resume: "main"` 时有；其余为空）
+- `ZOM_HOOK_KIND`：`mini`
+- `ZOM_HOOK_SID`：`resume: "main"` 时的主会话 id，其余为空
 - `ZOM_HOOK_CWD`：spawn 发生的目录
 
 钩子的 stdin 接的是真实终端（召唤 widget 的 stdin 不是 tty，不做这一步

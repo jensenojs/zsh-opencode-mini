@@ -1,7 +1,7 @@
 # zsh-opencode-mini.plugin.zsh
 # The shell side of zsh-opencode-mini: command recording, the outbox consumer
-# (cross-side return channel from the opencode plugin), background-session
-# spawning, and the opencode mini launcher.
+# (cross-side return channel from the opencode plugin), spawn hooks, and the
+# opencode mini launcher.
 # Principle: zero intrusion into the user's zsh — registers via idempotent
 # appends to the preexec_functions/precmd_functions arrays, never overwrites
 # widgets, never touches the prompt. Uninstall = remove the source line.
@@ -547,9 +547,9 @@ __zom_stderr_shape() {
 # surface in this one. "" on either side means "cannot tell" — legacy records
 # written before the tty field existed, or shells without a terminal (scripts,
 # test sandboxes) — and degrades to the previous global-latest behaviour
-# instead of hiding a real failure from everyone. One predicate for all three
-# consumers (prefill gate, zom-last gate, the success flush in __zom_precmd),
-# so reading and clearing can never disagree about who owns a signal.
+# instead of hiding a real failure from everyone. One predicate for both
+# consumers (prefill gate, the success flush in __zom_precmd), so reading and
+# clearing can never disagree about who owns a signal.
 __zom_tty_owned() {
   [[ -z "$1" || -z "${TTY:-}" || "$1" == "$TTY" ]]
 }
@@ -721,9 +721,9 @@ __zom_precmd() {
 }
 
 # ---- outbox: the cross-side return channel ----
-# companion.js is the only writer of outbox.jsonl (recipe
-# results, background-session finish notices — one JSON record per line,
-# always carrying a .text). zsh consumes it here with a byte cursor:
+# companion.js is the only writer of outbox.jsonl (recipe results — one JSON
+# record per line, always carrying a .text). zsh consumes it here with a byte
+# cursor:
 # outbox.cursor stores the offset of the first unread byte. Steady state (no
 # new records) costs zero forks — zstat/sysseek/sysread are builtins; one jq
 # parses the increment only when there is one.
@@ -769,24 +769,13 @@ __zom_outbox_drain() {
   # Per-line parse: one malformed line must not cost the valid lines after it
   # (a chunk-level jq loses everything past the first bad line, and the cursor
   # would advance past them anyway).
-  local line text bad=0 bsid
+  local line text bad=0
   while IFS= read -r line; do
     if [[ -z "$line" ]]; then
       continue
     fi
     if text=$(printf '%s' "$line" | jq -r '.text // empty' 2>/dev/null); then
       if [[ -n "$text" ]]; then
-        # A bg-done record the companion already injected into a live session
-        # is consumed silently: the model already knows (contract on
-        # __zom_bg_injected_p below). The string pre-filter keeps the extra
-        # jq fork off every non-bg-done record; a record carrying a .sid IS a
-        # bg-done record (only appendOutbox's bg-done lines carry one).
-        if [[ "$line" == *'"bg-done"'* ]]; then
-          bsid=$(printf '%s' "$line" | jq -r '.sid // ""' 2>/dev/null) || bsid=""
-          if [[ -n "$bsid" ]] && __zom_bg_injected_p "$bsid"; then
-            continue
-          fi
-        fi
         print -u2 -- "zom: $text"
       fi
     else
@@ -801,49 +790,15 @@ __zom_outbox_drain() {
   return 0
 }
 
-# Has the companion already delivered this bg-done session id into a live
-# session's context? The opencode-side companion appends {sid: epoch} to
-# bg-injected.json at injection time (tmp+mv, the last-failure.json
-# protocol); this side only reads it. "Recent" shares the failure TTL
-# (companion.failureTtlSeconds -> ZOM_FAILURE_TTL): past the window the
-# marker is ignored, so a stale marker can never silence a notice forever.
-# Known gap, accepted: the shell can drain a record BEFORE the injection
-# happens (no session was open when the event arrived, then the user never
-# summoned) — the user then sees the notice twice, once as a terminal line
-# and once as a context hint. That is the same at-least-once duplication the
-# outbox already tolerates; coordinating the two consumers exactly would
-# need a cross-process lock this design deliberately avoids.
-__zom_bg_injected_p() {
-  local f="$ZOM_DATA_DIR/bg-injected.json"
-  [[ -f "$f" ]] || return 1
-  local epoch
-  epoch=$(jq -r --arg sid "$1" '.[$sid] // 0' "$f" 2>/dev/null) || return 1
-  if ! __zom_is_uint "$epoch" || [[ "$epoch" == 0 ]]; then
-    return 1
-  fi
-  if (( EPOCHSECONDS - epoch <= ZOM_FAILURE_TTL )); then
-    return 0
-  fi
-  return 1
-}
-
-# ---- background sessions ----
-# zom-bg runs a prompt in a dedicated background opencode session. The session
-# lives on the shared service (plain `run`), so `opencode mini -s <sid>` can
-# attach to it later — --standalone would keep the session client-side and
-# unreachable from mini. bg.jsonl is the spawn ledger: the opencode side reads
-# it to know which sids to watch for completion, this function prints the sid
-# for attaching.
-# Spawn-hook dispatch: entries in the ZOM_SPAWN_HOOKS array run before every
-# spawn point (mini / zom-bg / zom-last); a failing hook must not block the
-# spawn.
+# ---- spawn hooks ----
+# Spawn-hook dispatch: entries in the ZOM_SPAWN_HOOKS array run before the
+# mini spawn; a failing hook must not block the spawn.
 # Mechanism/policy split: the plugin owns the spawn facts, hooks own what to
 # do with them. Entries may be zsh functions or external executables; both
 # receive the spawn context through exported env vars (dynamically scoped —
 # set for the hook call, gone on return):
-#   ZOM_HOOK_KIND  mini | bg | last
-#   ZOM_HOOK_SID   session id when known at hook time (bg always; mini when
-#                  resuming the main session; empty otherwise)
+#   ZOM_HOOK_KIND  mini
+#   ZOM_HOOK_SID   the main session id when resuming (empty otherwise)
 #   ZOM_HOOK_CWD   the directory the spawn happens in
 # Env vars rather than argv: the contract grows without every consumer
 # re-signing, and external executables inherit the same environment.
@@ -890,25 +845,6 @@ __zom_run_spawn_hooks() {
     fi
   done
   return 0
-}
-zom-bg() {
-  if (( $# == 0 )); then
-    print -u2 -- "zom-bg: usage: zom-bg <prompt...>"
-    return 1
-  fi
-  local sid="ses_zom-bg-${EPOCHSECONDS}-$$"
-  # sid exists before the hooks so consumers (e.g. wezterm-attention) can
-  # bind the coming background session to this pane's activity.
-  __zom_run_spawn_hooks bg "$sid"
-  "$ZOM_BINARY" run -s "$sid" "$@" >/dev/null 2>&1 &
-  local pid=$!   # capture before anything else can spawn — $! is the run process
-  print -r -- "{\"sid\":\"$sid\",\"pid\":$pid,\"cwd\":\"$(__zom_json_escape "$PWD")\",\"started\":$EPOCHSECONDS}" \
-    >> "$ZOM_DATA_DIR/bg.jsonl" || {
-      print -u2 -- "zom-bg: cannot write $ZOM_DATA_DIR/bg.jsonl — the completion notice will not fire"
-      return 1
-    }
-  print -- "zom-bg: session $sid started in background"
-  print -- "zom-bg: attach with: opencode mini -s $sid"
 }
 
 # ---- summon opencode mini ----
@@ -1193,41 +1129,6 @@ zom-update() {
     }
   fi
   return 0
-}
-
-# Quick ask: hand the most recent failed command straight to `opencode run`,
-# no TUI. Same freshness rules as the composer prefill: a record older than
-# companion.failureTtlSeconds, or one from a different directory, does not
-# count as "the last failure" here either.
-zom-last() {
-  local f="$ZOM_DATA_DIR/last-failure.json"
-  local last_failed epoch cwd sig_tty
-  last_failed=$(jq -r '.cmd // empty' "$f" 2>/dev/null)
-  if [[ -z "$last_failed" ]]; then
-    print -u2 "zom-last: no failed command on record"
-    return 1
-  fi
-  epoch=$(jq -r '.epoch // 0' "$f" 2>/dev/null)
-  cwd=$(jq -r '.cwd // ""' "$f" 2>/dev/null)
-  if ! __zom_is_uint "$epoch" || (( EPOCHSECONDS - epoch > ZOM_FAILURE_TTL )); then
-    print -u2 "zom-last: failure record is stale (older than ${ZOM_FAILURE_TTL}s)"
-    return 1
-  fi
-  if [[ "$cwd" != "$PWD" ]]; then
-    print -u2 "zom-last: last failure was in $cwd, not here"
-    return 1
-  fi
-  # Same ownership rule as the prefill: another terminal's failure is not
-  # explainable from this one — send the user to the terminal that saw it.
-  sig_tty=$(jq -r '.tty // ""' "$f" 2>/dev/null)
-  if ! __zom_tty_owned "$sig_tty"; then
-    print -u2 "zom-last: last failure was in another terminal"
-    return 1
-  fi
-  print -- "zom-last: $last_failed"
-  # `run` creates a fresh session whose id is only known to opencode itself.
-  __zom_run_spawn_hooks last
-  "$ZOM_BINARY" run "Explain and fix this failed command (run in the current directory): $last_failed"
 }
 
 # ---- install ----

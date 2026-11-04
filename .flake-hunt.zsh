@@ -41,8 +41,6 @@ bad()  {
     print -r -- "--- outbox files ---"
     cat "$DD/outbox.jsonl" 2>&1
     cat "$DD/outbox.cursor" 2>&1
-    print -r -- "--- bg.jsonl ---"
-    cat "$DD/bg.jsonl" 2>&1
     print -r -- "--- mock log ---"
     cat "$ZOM_MOCK_LOG" 2>&1
     print -r -- "--- config ---"

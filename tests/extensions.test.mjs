@@ -217,18 +217,6 @@ function delta(ext, sid, dInput, dRead) {
   await stateWatch.setup(ctx, host)
   const bump = () => delta(listeners[0], "x", 1, 0)
 
-  const big = ("x".repeat(99) + "\n").repeat(12 * 1024) // ~1.2MB, full lines
-  writeFileSync(join(dir, "bg.jsonl"), big)
-  for (let i = 0; i < 50; i++) bump()
-  const trimmed = readFileSync(join(dir, "bg.jsonl"), "utf8")
-  check("oversized bg.jsonl trimmed", statSync(join(dir, "bg.jsonl")).size <= 64 * 1024 + 128)
-  check("trim keeps the tail", trimmed.endsWith(big.slice(-64)))
-  check("trim reports", reports.some((m) => m.includes("bg.jsonl")))
-
-  writeFileSync(join(dir, "bg.jsonl"), "small\n")
-  for (let i = 0; i < 50; i++) bump()
-  check("small bg.jsonl untouched", readFileSync(join(dir, "bg.jsonl"), "utf8") === "small\n")
-
   // The outbox rotates here, not on the append path: same cap, same tail.
   const outboxBig = ("y".repeat(99) + "\n").repeat(12 * 1024)
   writeFileSync(join(dir, "outbox.jsonl"), outboxBig)

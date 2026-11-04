@@ -11,10 +11,7 @@
 //     gating (generate/storage/event surfaces only required when used),
 //     failure watch -> generate call shape (model object, placeholder fill),
 //     exitFilter, ratePerHour via storage, both deliver paths, cleanup,
-//     manual recipe tools, bg-done notifications
-//   - bg-done in-session injection: queued at outbox-append time, delivered
-//     once by the next context hook (sid + cwd), bg-injected.json handshake
-//     written at injection time
+//     manual recipe tools
 //   - failure {stderr} slot: the bounded tail stored by the zsh side fills
 //     the prompt; an absent field renders ""
 // What is NOT covered here: real opencode runtime behavior (tool schema
@@ -379,7 +376,6 @@ try {
     const cases = [
       ["unknown on", `{"recipes":{"x":{"on":"cron","model":"p/m","prompt":"p","deliver":"outbox"}}}`, "unknown on value"],
       ["slot outside trigger (failure {sid})", `{"recipes":{"x":{"on":"failure","model":"p/m","prompt":"{sid}","deliver":"outbox"}}}`, "not provided by"],
-      ["slot outside trigger (bg-done {exit})", `{"recipes":{"x":{"on":"bg-done","model":"p/m","prompt":"{exit}","deliver":"outbox"}}}`, "not provided by"],
       ["slot outside trigger (manual {sid})", `{"recipes":{"x":{"on":"manual","model":"p/m","prompt":"{sid}","deliver":"outbox"}}}`, "not provided by"],
       ["unknown deliver", `{"recipes":{"x":{"on":"failure","model":"p/m","prompt":"p","deliver":"email"}}}`, "unknown deliver value"],
       ["bad model", `{"recipes":{"x":{"on":"failure","model":"nomatch","prompt":"p","deliver":"outbox"}}}`, "provider/model-id"],
@@ -582,88 +578,6 @@ try {
       : bad("cleanup aborts stream and stops watcher", `aborted=${aborted} calls=${state.generateCalls.length}`)
   }
 
-  // 14. bg-done: execution.succeeded for a known bg sid -> outbox record;
-  //     unknown sid / other event types stay silent. Main shape = the real
-  //     runtime envelope {type, data:{sessionID}} (opencode 2.0.21); one
-  //     {properties} legacy-wire event proves the fallback still works
-  {
-    const sb = rootSandbox(); sb.use()
-    const { ctx, state } = makeCtx()
-    const clean = await plugin.setup(ctx)
-    writeFileSync(join(sb.dataDir, "bg.jsonl"), JSON.stringify({ sid: "ses_zom-bg-1", pid: 1 }) + "\n")
-    const feed = state.outboxFeeds[0]
-    // other event types never notify (session.status does not exist in v2)
-    feed.push({ type: "session.status", data: { sessionID: "ses_zom-bg-1", status: { type: "idle" } } })
-    feed.push({ type: "session.execution.succeeded", data: { sessionID: "ses_other" } })
-    await new Promise((r) => setTimeout(r, 100))
-    readOutbox(sb.dataDir).length === 0
-      ? ok("bg-done ignores non-execution events and unknown sids")
-      : bad("bg-done ignores non-execution events and unknown sids", JSON.stringify(readOutbox(sb.dataDir)))
-    feed.push({ type: "session.execution.succeeded", data: { sessionID: "ses_zom-bg-1" } })
-    const done = await waitFor(() => readOutbox(sb.dataDir).length === 1) && readOutbox(sb.dataDir)[0]
-    done?.kind === "bg-done" && done.sid === "ses_zom-bg-1" && done.ok === true && done.text === "background session ses_zom-bg-1 finished"
-      ? ok("bg-done succeeded appends outbox record")
-      : bad("bg-done succeeded appends outbox record", JSON.stringify(done))
-    // duplicate delivery (one evt id per server instance) is absorbed by the
-    // sid set, and a legacy-wire {properties} event still notifies
-    feed.push({ id: "evt_dup", type: "session.execution.succeeded", data: { sessionID: "ses_zom-bg-1" } })
-    feed.push({ id: "evt_dup", type: "session.execution.succeeded", data: { sessionID: "ses_zom-bg-1" } })
-    feed.push({ id: "evt_legacy", type: "session.execution.succeeded", properties: { sessionID: "ses_zom-bg-2" } })
-    writeFileSync(join(sb.dataDir, "bg.jsonl"), JSON.stringify({ sid: "ses_zom-bg-1", pid: 1 }) + "\n" + JSON.stringify({ sid: "ses_zom-bg-2", pid: 2 }) + "\n")
-    await new Promise((r) => setTimeout(r, 300))
-    const after = readOutbox(sb.dataDir)
-    after.length === 2 && after[1]?.sid === "ses_zom-bg-2" && after[1]?.ok === true
-      ? ok("bg-done dup delivery absorbed, legacy shape tolerated")
-      : bad("bg-done dup delivery absorbed, legacy shape tolerated", JSON.stringify(after))
-    // failed path: notify with ok:false when the sessionID is readable
-    // (ses_zom-bg-3 was never notified; bg-2 is already in the set)
-    feed.push({ type: "session.execution.failed", data: { sessionID: "ses_zom-bg-3" } })
-    writeFileSync(join(sb.dataDir, "bg.jsonl"), JSON.stringify({ sid: "ses_zom-bg-1", pid: 1 }) + "\n" + JSON.stringify({ sid: "ses_zom-bg-2", pid: 2 }) + "\n" + JSON.stringify({ sid: "ses_zom-bg-3", pid: 3 }) + "\n")
-    const bad1 = await waitFor(() => readOutbox(sb.dataDir).length === 3) && readOutbox(sb.dataDir)[2]
-    bad1?.ok === false && bad1.text.includes("with error")
-      ? ok("bg-done failed appends ok:false notice")
-      : bad("bg-done failed appends ok:false notice", JSON.stringify(bad1))
-    // failed with unreadable sessionID stays silent
-    feed.push({ type: "session.execution.failed", data: {} })
-    await new Promise((r) => setTimeout(r, 200))
-    readOutbox(sb.dataDir).length === 3
-      ? ok("bg-done failed without sessionID stays silent")
-      : bad("bg-done failed without sessionID stays silent", JSON.stringify(readOutbox(sb.dataDir)))
-    clean()
-  }
-
-  // 16. bg-done recipe: fires once per sid (deduped with the notification),
-  //     a second execution for the same sid is silent, another sid fires again
-  {
-    const sb = rootSandbox(); sb.use()
-    sb.write(`{"recipes":{"poke":{"on":"bg-done","model":"p/m","prompt":"done: {sid} in {cwd}","deliver":"outbox"}}}`)
-    const { ctx, state } = makeCtx()
-    const clean = await plugin.setup(ctx)
-    writeFileSync(join(sb.dataDir, "bg.jsonl"), JSON.stringify({ sid: "ses_zom-bg-1", cwd: "/w" }) + "\n" + JSON.stringify({ sid: "ses_zom-bg-2", cwd: "/x" }) + "\n")
-    const feed = state.outboxFeeds[0]
-    feed.push({ type: "session.execution.succeeded", data: { sessionID: "ses_zom-bg-1" } })
-    await waitFor(() => state.generateCalls.length === 1)
-    feed.push({ type: "session.execution.succeeded", data: { sessionID: "ses_zom-bg-1" } })
-    feed.push({ type: "session.execution.succeeded", data: { sessionID: "ses_zom-bg-2" } })
-    await waitFor(() => state.generateCalls.length === 2)
-    await new Promise((r) => setTimeout(r, 300))
-    state.generateCalls.length === 2
-      ? ok("bg-done recipe fires once per sid")
-      : bad("bg-done recipe fires once per sid", JSON.stringify(state.generateCalls))
-    // fill identity against the trigger's slot set: the ledger's cwd lands in
-    // {cwd}, the event's sessionID in {sid}
-    state.generateCalls[0]?.prompt === "done: ses_zom-bg-1 in /w"
-      ? ok("bg-done recipe fill matches trigger slots")
-      : bad("bg-done recipe fill matches trigger slots", JSON.stringify(state.generateCalls[0]))
-    const o = readOutbox(sb.dataDir)
-    const pokes = o.filter((r) => r.recipe === "poke")
-    const done = o.filter((r) => r.kind === "bg-done")
-    pokes.length === 2 && done.length === 2
-      ? ok("bg-done recipe outbox lines once per sid")
-      : bad("bg-done recipe outbox lines once per sid", JSON.stringify(o))
-    clean()
-  }
-
   // 18. notices: pending shell-side notices are injected once, deduped by
   //     kind+text, and the file self-cleans; a second hook sees nothing
   {
@@ -691,52 +605,6 @@ try {
     !tailTexts(ev2).some((t) => t.includes("shell-side notices"))
       ? ok("notices drained once")
       : bad("notices drained once", JSON.stringify(tailTexts(ev2)))
-    clean()
-  }
-
-  // 20. bg-done in-session injection: the event lands in the injection queue
-  //     at outbox-append time; the next context hook delivers it once (sid +
-  //     cwd + ok flag) and writes the bg-injected.json handshake the zsh
-  //     drain consults; a second hook sees nothing (queue consumed)
-  {
-    const sb = rootSandbox(); sb.use()
-    const { ctx, state } = makeCtx()
-    const clean = await plugin.setup(ctx)
-    writeFileSync(join(sb.dataDir, "bg.jsonl"), JSON.stringify({ sid: "ses_zom-bg-inj", cwd: "/proj" }) + "\n")
-    state.outboxFeeds[0].push({ type: "session.execution.succeeded", data: { sessionID: "ses_zom-bg-inj" } })
-    const rec = await waitFor(() => readOutbox(sb.dataDir).length === 1) && readOutbox(sb.dataDir)[0]
-    rec?.kind === "bg-done"
-      ? ok("injection: outbox record still written")
-      : bad("injection: outbox record still written", JSON.stringify(rec))
-    const ev = contextEvent()
-    fire(state, ev)
-    const line = tailTexts(ev).find((t) => t.includes("background session"))
-    line && line.includes("ses_zom-bg-inj") && line.includes("/proj")
-      ? ok("injection: hook delivers sid+cwd once")
-      : bad("injection: hook delivers sid+cwd once", JSON.stringify(tailTexts(ev)))
-    // handshake: the drain on the zsh side skips this sid for the TTL window
-    const marker = JSON.parse(readFileSync(join(sb.dataDir, "bg-injected.json"), "utf8"))
-    typeof marker["ses_zom-bg-inj"] === "number"
-      ? ok("injection: bg-injected.json marker written")
-      : bad("injection: bg-injected.json marker written", JSON.stringify(marker))
-    const ev2 = contextEvent()
-    fire(state, ev2)
-    !tailTexts(ev2).some((t) => t.includes("background session"))
-      ? ok("injection: consumed after one hook")
-      : bad("injection: consumed after one hook", JSON.stringify(tailTexts(ev2)))
-    // failed path names the error in the injection (fresh sid — the notify
-    // set dedupes per sid, ses_zom-bg-inj is already consumed)
-    writeFileSync(join(sb.dataDir, "bg.jsonl"),
-      JSON.stringify({ sid: "ses_zom-bg-inj", cwd: "/proj" }) + "\n" +
-      JSON.stringify({ sid: "ses_zom-bg-fail", cwd: "/proj" }) + "\n")
-    state.outboxFeeds[0].push({ type: "session.execution.failed", data: { sessionID: "ses_zom-bg-fail" } })
-    await waitFor(() => readOutbox(sb.dataDir).length === 2)
-    const ev3 = contextEvent()
-    fire(state, ev3)
-    const failLine = tailTexts(ev3).find((t) => t.includes("ses_zom-bg-fail"))
-    failLine && failLine.includes("with error")
-      ? ok("injection: failed session flagged with error")
-      : bad("injection: failed session flagged with error", JSON.stringify(tailTexts(ev3)))
     clean()
   }
 

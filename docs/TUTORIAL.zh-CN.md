@@ -74,7 +74,6 @@ recipe 的结果要回到用户眼前。它不能走 zsh 侧的 stdout——open
 | `failure.js` | 上一条命令失败要不要提、提给哪个终端 |
 | `notices.js` | 哪些 shell 侧降级状态要主动说出来 |
 | `repeat-failure.js` | 同一条命令一天失败几次算反复 |
-| `bg-done.js` | 哪个后台会话结束值得通知 |
 | `recipes.js` | recipe 的合法形状、触发条件、限频、投递 |
 | `context-tool.js` | `zom_context` 返回什么、按什么顺序 |
 | `session-title.js` | 会话闲置多久该重取标题 |
@@ -83,7 +82,7 @@ recipe 的结果要回到用户眼前。它不能走 zsh 侧的 stdout——open
 
 扩展的形状是 `{ id, setup(ctx, host) }`。`ctx` 只有一个 `session.hook`，钩子收到的事件是只读视图：`system` 与 `messages` 的每个元素都被冻结，写缓存前缀会当场抛错并归因到那个扩展。唯一的写入口是 `host.inject(event, text)`，它往会话尾部追加一条 system 消息，不碰前缀。前缀一逐请求变化，后面所有 token 都要按未命中重付。
 
-宿主提供的能力：`report`、`inject`、`storage`（按扩展 id 命名空间）、`kv.update`、`dataDir`、`files.*`（读信号、读历史尾巴、裁剪、列举、claim、白名单删除）、`outbox`、`model.parse/generate`、`tool.add`、`onFailure`、`onSessionExecution`、`onUsageDelta`、`render`。
+宿主提供的能力：`report`、`inject`、`storage`（按扩展 id 命名空间）、`kv.update`、`dataDir`、`files.*`（读信号、读历史尾巴、裁剪、列举、claim、白名单删除）、`outbox`、`model.parse/generate`、`tool.add`、`onFailure`、`onUsageDelta`、`render`。
 
 加载带滚动升级。每次成功加载把内容寻址的副本存进 `ext-good/<name>.<hash>.js`；新版本 import 或 setup 抛错时回滚到上一份能跑的副本，坏字节存成 `<name>.broken`。同 hash 的坏版本在之后的进程里直接隔离、不再重试，并报一句「仍在隔离」；没有上一版可退时也照样报告，不静默。`[companion] devPath` 可以把加载目录指到工作区，改完下次重载生效。
 
@@ -121,7 +120,7 @@ zom_recipe_<name> 工具(agent 调用)───┘      │
 
 配置校验分两层。TOML 读不出来是加载期错误，没人能读懂那份文档；单条 recipe 写错则只让 recipes 扩展拒绝整张表并报告原因，其余扩展照常工作——半接线的 recipe 比没有 recipe 更糟。
 
-事件形状靠真机实证而不是文档。bg-done 依赖的信封是对 opencode 2.0.21 全量事件 dump 验证出来的：`{id, created, type, durable, location?, data}`，`session.status` 不存在，终态信号是 `session.execution.succeeded` 且 `data = {sessionID}`。验证不了的路径显式沉默：`session.execution.failed` 的 data 形状没有失败样本，读不出 `sessionID` 时不通知。
+事件形状靠真机实证而不是文档。companion 读的 `session.usage.updated` 信封是对 opencode 2.0.21 全量事件 dump 验证出来的：`{id, created, type, durable, location?, data}`，`session.status` 不存在。
 
 两套测试的分工：
 
@@ -137,12 +136,11 @@ zom_recipe_<name> 工具(agent 调用)───┘      │
   "flake-hint": {                          // 名字必须匹配 ^[a-zA-Z0-9_-]+$，
                                            // 因为它会变成工具名 zom_recipe_flake-hint
                                            // 和注入前缀 [zom:flake-hint] 的一部分
-    "on": "failure",                       // 触发源：failure | bg-done | manual
+    "on": "failure",                       // 触发源：failure | manual
     "model": "anthropic/claude-haiku-4.5", // 必须 "provider/model-id"，setup 时校验
     "prompt": "命令 {cmd} 在 {cwd} 以退出码 {exit} 失败。这是第 N 次了，判断是否值得修。一句话。",
                                            // {cmd}/{exit}/{cwd}/{stderr} 从事件填充
-                                           // （extensions/recipes.js 的 render）；bg-done
-                                           // 触发时槽位是 {sid}/{cwd}
+                                           // （extensions/recipes.js 的 render）
     "exitFilter": [1, 2],                  // 可选。只在这些退出码上触发；省略 = 全部
     "ratePerHour": 3,                      // 可选。每小时最多 fire 几次模型调用
     "deliver": "outbox",                   // outbox = 下个提示符前一行 "zom: …"
@@ -155,10 +153,9 @@ zom_recipe_<name> 工具(agent 调用)───┘      │
 
 保存后重启 opencode 进程（setup 只在加载时跑一次）。验证路径：故意跑一条 `exitFilter` 命中的失败命令，看下个提示符前有没有 `zom:` 行；deliver 用 next-session 时，开 `opencode mini` 问一句「你上下文里有没有 zom 开头的行」。
 
-三条现成的触发语义可以组合：
+两条现成的触发语义可以组合：
 
 - `on: "failure"`——watcher 路径，实时，受 exitFilter/ratePerHour 约束；
-- `on: "bg-done"`——某个 `zom-bg` 会话结束时，槽位是 `{sid}` `{cwd}`，按 sid 跨进程去重（`host.files.claim("bg-<sid>")`）；
 - `on: "manual"`——注册成 `zom_recipe_<name>` 工具，agent 自己决定何时调用（`extensions/recipes.js` 的 `host.tool.add`），槽位由 agent 填。
 
 两个容易漏的点：ratePerHour 的闸门在 generate 之前（省了钱但建议也没了，这是有意的——闸门的语义是「这个 recipe 每小时最多值 N 次调用」）；prompt 模板里没写的槽位不会自动进上下文，模型只看到 fill 出来的字符串。
@@ -182,22 +179,20 @@ zom_recipe_<name> 工具(agent 调用)───┘      │
 | S3 | 失败信号：非零退出原子刷新，零退出不动；无 .tmp 残留 | 插件契约 |
 | S4 | 裸 `zsh -f` 下自加载 zsh/datetime（回归：曾因 EPOCHREALTIME 为空整条记录链瘫痪） | 插件契约 |
 | S5 | OSC 帧格式 + base64 payload 与落盘 JSON 逐字节一致 | 插件契约（也是 fork 洞 1 的线格式锚） |
-| S6/S7 | zom 与 zom-last 走到 mock opencode 的 argv 形状 | 插件契约 |
+| S6 | zom 走到 mock opencode 的 argv 形状 | 插件契约 |
 | S8/S9 | keybind 默认与 off 令牌；config dataDir（含 ~ 展开） | 插件契约 |
 | S10 | companion 的 V2 加载 / fresh 注入 / stale 沉默 / V3 loud refuse（node 可用时跑 companion.test.mjs） | 插件契约 |
 | S11 | keybind 冲突：警告、保留用户绑定、不注册 widget | 插件契约 |
 | S12 | err_return + nounset 环境下函数内 source 存活 | 插件契约 |
 | S13 | 坏 config：一行响亮警告 + 默认值生效 | 插件契约 |
 | S14 | 双 shell 各 200 条并发记录，400 行全部完好（行级 append 原子性） | 插件契约 |
-| S15 | zom-last 无记录：stderr 提示、退出 1、零外部调用 | 插件契约 |
 | S16 | outbox 游标：完整行投递、游标停在最后完整行、半行等待、补全后恰一次投递、二次 drain 零输出 | 插件契约 |
-| S17 | zom-bg：sid、台账、`run -s`（永不 --standalone）、空 prompt 拒绝 | 插件契约 |
 
 套件头部（`tests/run.zsh:45-48`）声明了不自动化的部分：真实按键→ZLE→widget→`zle -I` 链需要活的交互 shell，那是 zsh 上游的 hook 语义保证，装好后按一次 C-x 手工验收。
 
-`tests/companion.test.mjs`（60 个断言，跑在一个 mock V2 ctx 上）的 mock 形状值得单独看：`tool.transform` 把注册的工具收进 `state.tools`；`session.hook` 收进 `state.contextHooks`；`storage` 是普通对象；`generate.text` 记录调用并返回 `{text}`；`event.subscribe` 返回一个可手动 `push` 事件的 AsyncIterable。测试全部通过操作这些 state 断言插件行为，从不 mock 插件内部——它把 `companion.js` 当黑盒，从 V2 公开面驱动；扩展的判断由 `tests/extensions.test.mjs` 用同一套 host 能力驱动。
+`tests/companion.test.mjs`（47 个断言，跑在一个 mock V2 ctx 上）的 mock 形状值得单独看：`tool.transform` 把注册的工具收进 `state.tools`；`session.hook` 收进 `state.contextHooks`；`storage` 是普通对象；`generate.text` 记录调用并返回 `{text}`；`event.subscribe` 返回一个可手动 `push` 事件的 AsyncIterable。测试全部通过操作这些 state 断言插件行为，从不 mock 插件内部——它把 `companion.js` 当黑盒，从 V2 公开面驱动；扩展的判断由 `tests/extensions.test.mjs` 用同一套 host 能力驱动。
 
-mock 里两处直接对应上一节的契约观：`fireViaWatcher`（丢事件重试，守护插件管线而非平台投递）和 bg-done 用例里同时喂真实运行时信封 `{type, data:{sessionID}}` 与 legacy `{properties}` 事件（插件对旧线格式的容错是被测试钉住的行为）。
+mock 里一处直接对应上一节的契约观：`fireViaWatcher` 换新 epoch 重试，守护的是插件管线（读信号 → 去重 → exitFilter → fire）而不是平台投递。
 
 ---
 

@@ -21,10 +21,6 @@
 //   - recipes: declarative model calls fired from shell signals (watching
 //     last-failure.json), delivered into next-session injection or the
 //     outbox — the zsh side reads outbox.jsonl via its byte cursor
-//   - zom-bg notifications: watch session.execution.* for background sessions
-//     recorded in bg.jsonl; each finish is appended to the outbox AND queued
-//     for in-session injection at the next context hook. The zsh drain skips
-//     outbox records already injected (bg-injected.json is the handshake).
 //   - notices: drain shell-side degraded-state facts (notices.jsonl) into the
 //     context injection so the next session surfaces them to the user
 
@@ -348,10 +344,9 @@ function drainNotices(dataDir) {
 // on the command — a changed argument is a different command; that is the
 // documented granularity limit of this heuristic.
 // --- bounded files ---------------------------------------------------------
-// How to cut a jsonl file down to its newest lines, in one place: the outbox
-// rotation and the extension that prunes bg.jsonl both need it, and two
-// implementations drift on the only question that matters — what happens to a
-// torn last line (dropped: it is a crashed append, not a record).
+// How to cut a jsonl file down to its newest lines, in one place, so every
+// caller answers the only question that matters the same way — what happens
+// to a torn last line (dropped: it is a crashed append, not a record).
 export function trimTailFile(path, { capBytes, keepBytes }) {
   if (!existsSync(path)) return false
   const buf = readFileSync(path)
@@ -409,8 +404,8 @@ export default {
       return join(dataDir, `history-${m}.jsonl`)
     }
 
-    // Probe exactly what this configuration will touch: bg-done watching is
-    // always on, generation/storage only when recipes can fire.
+    // Probe exactly what this configuration will touch: the event stream is
+    // always on (usage deltas), generation only when recipes can fire.
     const extraSurfaces = [
       ["ctx.event.subscribe", (c) => typeof c?.event?.subscribe === "function"],
       ["ctx.agent.transform", (c) => typeof c?.agent?.transform === "function"],
@@ -568,7 +563,6 @@ export default {
       },
     }
     const failureListeners = []
-    const execListeners = []
     const onFailure = (cb) => failureListeners.push(cb)
     const outbox = {
       append: (record) => appendOutbox(record),
@@ -584,34 +578,6 @@ export default {
         return out
       },
     }
-
-    // Cross-process handshake with the zsh side's __zom_outbox_drain: a
-    // bg-done injected here must not ALSO print as `zom: ...` at the shell
-    // prompt, so injection records {sid: epoch} in this file and the drain
-    // skips records whose sid was injected within the failure TTL (the same
-    // key both sides read for freshness). Written only when an injection
-    // actually happened; a drain that ran earlier still prints — the accepted
-    // duplication is documented on the zsh side.
-    const bgInjectedPath = join(dataDir, "bg-injected.json")
-    const BG_INJECTED_CAP = 200
-    const markBgInjected = (sid) => {
-      let cur = {}
-      try { cur = JSON.parse(readFileSync(bgInjectedPath, "utf8")) } catch {}
-      // Delete before insert so a re-marked sid moves to the back: a plain
-      // assignment keeps the original position and the cap would evict the
-      // newest entries first.
-      delete cur[sid]
-      cur[sid] = Math.floor(Date.now() / 1000)
-      const keys = Object.keys(cur)
-      for (const k of keys.slice(0, Math.max(0, keys.length - BG_INJECTED_CAP))) delete cur[k]
-      const tmp = `${bgInjectedPath}.tmp`
-      writeFileSync(tmp, JSON.stringify(cur))
-      renameSync(tmp, bgInjectedPath)
-    }
-    // Both are file protocols the zsh side also reads; the decision to use
-    // them (which sessions count as background, when to notify) is not here.
-    files.bgLedger = () => bgLedger()
-    files.markBgInjected = (sid) => markBgInjected(sid)
 
     // Failure watcher. last-failure.json is atomically replaced (tmp+mv), so
     // watch the directory and filter by filename — watching the file itself
@@ -631,26 +597,10 @@ export default {
       }
     })
 
-    // zom-bg completion notifications: watch server events for sessions the
-    // shell spawned into background (bg.jsonl is the zsh-side ledger).
-    // One execution = one finished task. Verified against a real runtime
-    // (opencode 2.0.21, 2026-10-01, full event dump): events arrive as
-    // {id, created, type, durable, location?, data}, session.status does NOT
-    // exist, and the terminal signal is session.execution.succeeded with
-    // data = {sessionID}. session.execution.failed exists as a pair but its
-    // data shape is unverified (no failure sample) — we notify only when a
-    // sessionID is readable, otherwise silently skip (see README limits).
-    const bgLedger = () => {
-      const p = join(dataDir, "bg.jsonl")
-      if (!existsSync(p)) return new Map()
-      const map = new Map() // sid -> cwd at spawn time
-      for (const line of readFileSync(p, "utf8").split("\n")) {
-        try {
-          if (line.trim()) { const r = JSON.parse(line); map.set(r.sid, r.cwd) }
-        } catch {} // a torn ledger line is not worth failing the stream over
-      }
-      return map
-    }
+    // Usage deltas only: the stream carries other event types, this side reads
+    // session.usage.updated and nothing else. Envelope verified against a real
+    // runtime (opencode 2.0.21, 2026-10-01, full event dump):
+    // {id, created, type, durable, location?, data}.
     const bgAbort = new AbortController()
     void (async () => {
       try {
@@ -658,23 +608,7 @@ export default {
           // ev.data is the verified v2 envelope; ev.properties kept as
           // older-wire tolerance, bare ev as last resort.
           const p = ev?.data ?? ev?.properties ?? ev
-          if (ev?.type === "session.usage.updated") {
-            dispatchUsage(p)
-            continue
-          }
-          const failed = ev?.type === "session.execution.failed"
-          if (ev?.type !== "session.execution.succeeded" && !failed) continue
-          const sid = p?.sessionID
-          if (!sid) continue // failed-path data shape unverified; stay silent
-          // Delivered raw: which sessions matter, when to notify and what to
-          // say are decisions the bg-done extension and recipes make.
-          for (const cb of execListeners) {
-            try {
-              cb({ sid, ok: !failed })
-            } catch (e) {
-              extensionReport("companion", `execution listener failed: ${e?.message ?? e}`)
-            }
-          }
+          if (ev?.type === "session.usage.updated") dispatchUsage(p)
         }
       } catch (e) {
         if (!bgAbort.signal.aborted) {
@@ -691,7 +625,6 @@ export default {
       outbox,
       recipes,
       onFailure,
-      onSessionExecution: (cb) => execListeners.push(cb),
     })
 
     return () => {
@@ -1134,16 +1067,6 @@ export async function loadExtensions(ctx, dataDir, agentID = OWN_AGENT, cfg = {}
     },
     // Same split for the outbox: append/read are ours, what to append is not.
     outbox: services.outbox ?? { append: () => {}, records: () => [] },
-    onSessionExecution: (cb) =>
-      pending.push(() =>
-        (services.onSessionExecution ?? (() => {}))((ev) => {
-          try {
-            cb(ev)
-          } catch (e) {
-            extensionReport(id, `execution listener failed: ${e?.message ?? e}`)
-          }
-        }),
-      ),
     // Errors attribute to the extension that registered the listener.
     onFailure: (cb) =>
       pending.push(() =>

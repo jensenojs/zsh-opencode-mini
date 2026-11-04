@@ -1,19 +1,17 @@
 // zsh-opencode-mini's state-dir watcher (policy only).
 //
-// The shell data dir holds one unbounded append-only writer the plugin
-// itself documents as a knockout (bg.jsonl, ~60B/line spawn ledger) plus
-// per-pid passthrough key logs that outlive their processes. History rotates
-// monthly with cleanup, notices.jsonl drains destructively, last-failure.json
-// is overwritten in place. Two files need a periodic cutter: bg.jsonl and the
-// outbox (rotated here rather than on the append path, where it would read the
-// whole file per record and race another process's append).
+// The shell data dir holds per-pid passthrough key logs that outlive their
+// processes. History rotates monthly with cleanup, notices.jsonl drains
+// destructively, last-failure.json is overwritten in place. One file needs a
+// periodic cutter: the outbox (rotated here rather than on the append path,
+// where it would read the whole file per record and race another process's
+// append).
 //
-// Trim semantics follow the outbox rotation philosophy: keep the tail,
-// cut at a newline, tmp+mv; consumers tolerate at-least-once.
+// Trim semantics: keep the tail, cut at a newline, tmp+mv; consumers tolerate
+// at-least-once.
 
 import { join } from "node:path"
 
-const BG_MAX_BYTES = 1024 * 1024 // trim bg.jsonl once past 1MB
 const OUTBOX_MAX_BYTES = 1024 * 1024
 const KEEP_TAIL_BYTES = 64 * 1024
 const KEYLOG_AGE_MS = 7 * 24 * 60 * 60 * 1000 // keys.log older than a week
@@ -28,7 +26,6 @@ const STALE = [
   [/^claim-/, CLAIM_AGE_MS],
 ]
 const TRIMMED = {
-  "bg.jsonl": BG_MAX_BYTES,
   "outbox.jsonl": OUTBOX_MAX_BYTES,
   // Normally drained by notices.js; if that extension is not loaded the file
   // only ever grows, so the scanner caps it too (oldest dropped, which the
