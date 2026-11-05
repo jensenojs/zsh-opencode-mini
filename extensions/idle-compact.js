@@ -16,6 +16,19 @@ const DEFAULT_IDLE_MINUTES = 30
 const QUIET_AFTER_COMPACT_MS = 5 * 60_000
 const DEDUPE_MS = 10 * 60_000
 
+// The session's own clock, in the shapes the wire can hand over: the schema is
+// epoch millis, the SDK may already have decoded it to a Date or a DateTime,
+// and a server build without `updated` still reports when the last run ended.
+const activityAt = (session) => {
+  const raw = session?.time?.updated ?? session?.time?.idle ?? session?.time_updated
+  if (raw == null) return 0
+  if (typeof raw === "number") return raw
+  if (typeof raw === "string") return Date.parse(raw) || 0
+  if (typeof raw.getTime === "function") return raw.getTime()
+  if (typeof raw.epochMilliseconds === "number") return raw.epochMilliseconds
+  return 0
+}
+
 const INSTRUCTION = [
   "This conversation is being compacted for a terminal assistant that keeps one session for months.",
   "Keep only what is still true: standing preferences and constraints, decisions already made,",
@@ -53,6 +66,14 @@ export default {
       timers.delete(sid)
     }
 
+    const arm = (sid, delay) => {
+      disarm(sid)
+      const timer = setTimeout(() => void fire(sid), delay)
+      // A pending compaction must not keep a shutting-down host alive.
+      timer.unref?.()
+      timers.set(sid, timer)
+    }
+
     const fire = async (sid) => {
       timers.delete(sid)
       if (firing.has(sid)) return
@@ -62,6 +83,16 @@ export default {
         // A subagent's history is never summoned again; compacting it is waste.
         if (!session || session.parentID) return
         if (session.agent !== host.agent) return
+        // The timer is a hint, the session is the authority. It outlives the
+        // generation that armed it, and it never sees activity that produced no
+        // usage delta, so it can come due while the conversation is in use.
+        // Re-check against the session's own clock and wait out whatever part
+        // of the idle window is left.
+        const quiet = Date.now() - activityAt(session)
+        if (quiet < idleMs) {
+          arm(sid, idleMs - quiet)
+          return
+        }
         if (Date.now() - (lastFire.get(sid) ?? 0) < DEDUPE_MS) return
         lastFire.set(sid, Date.now())
         muted.set(sid, Date.now() + QUIET_AFTER_COMPACT_MS)
@@ -73,14 +104,17 @@ export default {
       }
     }
 
+    // A reload drops this generation's listener but not its timers; without
+    // this they fire into the next generation, which cannot clear them.
+    host.onDispose?.(() => {
+      for (const timer of timers.values()) clearTimeout(timer)
+      timers.clear()
+    })
+
     host.onUsageDelta(({ sid }) => {
       if (!sid) return
       if ((muted.get(sid) ?? 0) > Date.now()) return
-      disarm(sid)
-      const timer = setTimeout(() => void fire(sid), idleMs)
-      // A pending compaction must not keep a shutting-down host alive.
-      timer.unref?.()
-      timers.set(sid, timer)
+      arm(sid, idleMs)
     })
   },
 }

@@ -10,7 +10,7 @@ import { join } from "node:path"
 import stateWatch from "../extensions/state-watch.js"
 import idleCompact from "../extensions/idle-compact.js"
 import sessionTitle from "../extensions/session-title.js"
-import { loadExtensions, trimTailFile } from "../companion.js"
+import { loadExtensions, resetGenerationState, trimTailFile } from "../companion.js"
 
 let pass = 0
 let fail = 0
@@ -434,6 +434,75 @@ function delta(ext, sid, dInput, dRead) {
   await new Promise((r) => setTimeout(r, 60))
   check("subagent and other-agent sessions are not compacted", compacted.length === 1)
   check("no host problems reported", reports.length === 0)
+}
+
+// --- idle compaction: the timer is a hint, the session is the authority -----
+{
+  const { ctx } = makeCtx()
+  const compacted = []
+  const disposers = []
+  const listeners = []
+  const sessions = {
+    // Last written to a moment ago: the idle window has barely started even
+    // though a timer armed for it has already come due.
+    ses_fresh: { sessionID: "ses_fresh", agent: "mini", time: { updated: Date.now() } },
+  }
+  const host = {
+    agent: "mini",
+    config: { idleCompact: { idleMinutes: 0.002 } }, // 120ms
+    report: () => {},
+    onUsageDelta: (cb) => listeners.push(cb),
+    onDispose: (cb) => disposers.push(cb),
+    compactionPrompt: () => {},
+    session: {
+      get: async (sessionID) => sessions[sessionID],
+      compact: async (sessionID) => compacted.push(sessionID),
+    },
+  }
+  await idleCompact.setup(ctx, host)
+  check("the generation registers a disposer", disposers.length === 1)
+
+  listeners[0]({ sid: "ses_fresh" })
+  await new Promise((r) => setTimeout(r, 80))
+  check("a session touched after the timer was armed is not compacted", compacted.length === 0)
+
+  // The recheck re-arms for the remainder of the window instead of dropping it.
+  await new Promise((r) => setTimeout(r, 120))
+  check("it compacts once the session has actually been idle", compacted[0] === "ses_fresh")
+
+  disposers[0]()
+  const before = compacted.length
+  listeners[0]({ sid: "ses_fresh" }) // arm a timer for this generation
+  disposers[0]() // then drop the generation that owns it
+  sessions.ses_fresh.time.updated = Date.now() - 10_000
+  await new Promise((r) => setTimeout(r, 200))
+  check("a disposed generation leaves no timer behind", compacted.length === before)
+}
+
+// --- generation cleanup: a reload takes back what the last one armed --------
+{
+  const cfgDir = mkdtempSync(join(tmpdir(), "zom-ext-dispose-"))
+  const dataDir = mkdtempSync(join(tmpdir(), "zom-ext-disposedata-"))
+  mkdirSync(join(cfgDir, "extensions"))
+  const marker = join(dataDir, "disposed.txt")
+  writeFileSync(
+    join(cfgDir, "extensions", "armed.js"),
+    `import { writeFileSync } from "node:fs"\n` +
+      `export default { id: "armed", setup(ctx, host) {\n` +
+      `  host.onDispose(() => writeFileSync(${JSON.stringify(marker)}, "disposed"))\n` +
+      `} }\n`,
+  )
+  writeFileSync(join(cfgDir, "config.toml"), '[shell]\nbinary = "x"\n')
+
+  const prevCfg = process.env.ZOM_CONFIG
+  process.env.ZOM_CONFIG = join(cfgDir, "config.toml")
+  await loadExtensions(makeCtx().ctx, dataDir)
+  check("a disposer does not run while its generation lives", !existsSync(marker))
+  resetGenerationState()
+  check("a reload runs what the previous generation registered", existsSync(marker))
+  process.env.ZOM_CONFIG = prevCfg
+  rmSync(cfgDir, { recursive: true, force: true })
+  rmSync(dataDir, { recursive: true, force: true })
 }
 
 // --- rolling upgrade: a broken version rolls back, once ---------------------

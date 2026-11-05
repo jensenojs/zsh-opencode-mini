@@ -159,6 +159,8 @@ function makeCtx({ version = "2.0.21", omit = [] } = {}) {
   const state = {
     tools: [],
     contextHooks: [],
+    compactionHooks: [],
+    compactionHooks: [],
     systemPushes: [],
     generateCalls: [],
     storage: {},
@@ -186,6 +188,13 @@ function makeCtx({ version = "2.0.21", omit = [] } = {}) {
     session: has("session")
       ? {
           async hook(name, cb) {
+            // SessionHooks carries both; the summarizer instruction rides the
+            // compaction request, not the agent loop's context.
+            if (name === "compaction") {
+              await null
+              state.compactionHooks.push(cb)
+              return
+            }
             if (name !== "context") throw new Error(`unexpected hook ${name}`)
             await null
             state.contextHooks.push(cb)

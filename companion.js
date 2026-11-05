@@ -646,6 +646,10 @@ export default {
 //   host.onUsageDelta(cb)   per session.usage.updated, once the companion's
 //                           event loop has turned the cumulative totals into
 //                           a {sid, dInput, dRead} delta
+//   host.onDispose(fn)      run when this generation is replaced. Clearing a
+//                           listener stops events; a timer keeps its closure
+//                           and fires into the next generation unless the one
+//                           that armed it takes it back here.
 //   host.storage(name)      JSON kv in the shell data dir, tmp+mv atomic,
 //                           survives restarts (deltas need a baseline; the
 //                           19:56 drop landed in the boot blind spot without)
@@ -657,6 +661,12 @@ export default {
 const extensionProblems = [] // { name, msg, ts } awaiting delivery
 const EXTENSION_PROBLEM_CAP = 200
 const usageDeltaListeners = []
+// What a generation must take back when it is replaced. Clearing a listener
+// stops events; a timer an extension armed keeps its closure alive and fires
+// into whatever generation comes next, which no longer holds a handle to clear
+// it. The extension declares the cleanup, the host runs it at the same seam it
+// drops listeners.
+const generationDisposers = []
 // sid -> {input, read, ts} cumulative at last event. Persisted to disk because
 // mini embeds the server: every hide-and-relaunch is a fresh boot, and the
 // first turn after a relaunch is exactly the one that pays full price for a
@@ -721,6 +731,13 @@ export function extensionReport(name, msg) {
 // setup: without it a hot reload keeps the previous generation's listeners
 // alive, and each event fires the old generation's handlers too.
 export function resetGenerationState() {
+  for (const dispose of generationDisposers.splice(0, generationDisposers.length)) {
+    try {
+      dispose()
+    } catch (e) {
+      extensionReport("companion", `generation cleanup failed: ${e?.message ?? e}`)
+    }
+  }
   extensionProblems.length = 0
   usageDeltaListeners.length = 0
   usageTotals.clear()
@@ -1122,6 +1139,11 @@ export async function loadExtensions(ctx, dataDir, agentID = OWN_AGENT, cfg = {}
           }
         }),
       ),
+    // Timers and other resources survive resetGenerationState unless someone
+    // clears them, and the closure that armed them belongs to the generation
+    // being dropped. Same buffer as the other registrations: a setup that
+    // throws owns nothing.
+    onDispose: (cb) => pending.push(() => generationDisposers.push(cb)),
     // Injections go to the tail of the conversation, never the system
     // prompt: the system text is the cached prefix, and a hint that changes
     // between requests would re-pay for every token after it.
