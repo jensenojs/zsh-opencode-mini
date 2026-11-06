@@ -10,6 +10,13 @@
 // sessions belonging to another agent are left alone.
 
 const DEFAULT_IDLE_MINUTES = 30
+// Idleness alone is not a reason to compact: below this size the conversation
+// is cheaper to carry than to summarize, because the compaction request reads
+// the whole transcript once and the summary rewrites the cached prefix on the
+// next turn. The floor also bounds the idle loop from the other side — what a
+// compaction leaves behind is always under it, so the summary is never
+// summarized again while the session sits untouched.
+const DEFAULT_MIN_CONTEXT_TOKENS = 200_000
 // Compaction reports usage of its own. A delta that re-armed the timer would
 // compact again and again with the user never sending a prompt, so the extension
 // stays deaf for a while after firing and waits for real activity.
@@ -56,10 +63,12 @@ export default {
 
     const settings = host.config?.idleCompact ?? {}
     const idleMs = (Number.isFinite(settings.idleMinutes) ? settings.idleMinutes : DEFAULT_IDLE_MINUTES) * 60_000
+    const minContext = Number.isFinite(settings.minContextTokens) ? settings.minContextTokens : DEFAULT_MIN_CONTEXT_TOKENS
     const timers = new Map()
     const lastFire = new Map()
     const muted = new Map()
     const firing = new Set()
+    let reportedNoSize = false
 
     const disarm = (sid) => {
       clearTimeout(timers.get(sid))
@@ -111,9 +120,28 @@ export default {
       timers.clear()
     })
 
-    host.onUsageDelta(({ sid }) => {
+    host.onUsageDelta(({ sid, dInput, dRead, dWrite }) => {
       if (!sid) return
+      // One request's input is the conversation it carried: fresh tokens plus
+      // the cache it read and wrote. The host reports them as deltas of the
+      // session's cumulative counters.
+      const size = [dInput, dRead, dWrite].every((n) => typeof n === "number")
+        ? dInput + dRead + dWrite
+        : null
+      if (size == null) {
+        if (!reportedNoSize) {
+          reportedNoSize = true
+          host.report?.("usage delta carries no token size — idle compaction stays off")
+        }
+        return
+      }
       if ((muted.get(sid) ?? 0) > Date.now()) return
+      // Nothing worth compacting: drop whatever timer the previous, larger
+      // conversation armed.
+      if (size < minContext) {
+        disarm(sid)
+        return
+      }
       arm(sid, idleMs)
     })
   },

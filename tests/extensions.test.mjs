@@ -419,18 +419,18 @@ function delta(ext, sid, dInput, dRead) {
   check("compaction instruction is registered", prompts.length === 1)
   check("instruction drops finished work", prompts[0].includes("Drop the process of finished tasks"))
 
-  listeners[0]({ sid: "ses_root" })
+  listeners[0]({ sid: "ses_root", dInput: 250_000, dRead: 20_000, dWrite: 0 })
   await new Promise((r) => setTimeout(r, 60))
   check("an idle root session is compacted", compacted.length === 1 && compacted[0] === "ses_root")
 
   // Compaction reports usage of its own; the quiet window keeps that from
   // arming the next one without the user ever sending a prompt.
-  listeners[0]({ sid: "ses_root" })
+  listeners[0]({ sid: "ses_root", dInput: 250_000, dRead: 20_000, dWrite: 0 })
   await new Promise((r) => setTimeout(r, 60))
   check("compaction does not repeat inside the quiet window", compacted.length === 1)
 
-  listeners[0]({ sid: "ses_child" })
-  listeners[0]({ sid: "ses_other" })
+  listeners[0]({ sid: "ses_child", dInput: 250_000, dRead: 20_000, dWrite: 0 })
+  listeners[0]({ sid: "ses_other", dInput: 250_000, dRead: 20_000, dWrite: 0 })
   await new Promise((r) => setTimeout(r, 60))
   check("subagent and other-agent sessions are not compacted", compacted.length === 1)
   check("no host problems reported", reports.length === 0)
@@ -462,7 +462,7 @@ function delta(ext, sid, dInput, dRead) {
   await idleCompact.setup(ctx, host)
   check("the generation registers a disposer", disposers.length === 1)
 
-  listeners[0]({ sid: "ses_fresh" })
+  listeners[0]({ sid: "ses_fresh", dInput: 250_000, dRead: 20_000, dWrite: 0 })
   await new Promise((r) => setTimeout(r, 80))
   check("a session touched after the timer was armed is not compacted", compacted.length === 0)
 
@@ -472,11 +472,49 @@ function delta(ext, sid, dInput, dRead) {
 
   disposers[0]()
   const before = compacted.length
-  listeners[0]({ sid: "ses_fresh" }) // arm a timer for this generation
+  listeners[0]({ sid: "ses_fresh", dInput: 250_000, dRead: 20_000, dWrite: 0 }) // arm a timer for this generation
   disposers[0]() // then drop the generation that owns it
   sessions.ses_fresh.time.updated = Date.now() - 10_000
   await new Promise((r) => setTimeout(r, 200))
   check("a disposed generation leaves no timer behind", compacted.length === before)
+}
+
+// --- idle compaction: size decides whether there is anything worth doing ---
+{
+  const { ctx } = makeCtx()
+  const compacted = []
+  const listeners = []
+  const sessions = {
+    ses_small: { sessionID: "ses_small", agent: "mini" },
+  }
+  const host = {
+    agent: "mini",
+    config: { idleCompact: { idleMinutes: 0.0002 } }, // 12ms
+    report: () => {},
+    onUsageDelta: (cb) => listeners.push(cb),
+    compactionPrompt: () => {},
+    session: {
+      get: async (sessionID) => sessions[sessionID],
+      compact: async (sessionID) => compacted.push(sessionID),
+    },
+  }
+  await idleCompact.setup(ctx, host)
+
+  // The summary a compaction leaves behind is small; a delta that shrinks the
+  // conversation must drop the timer armed by the larger one, or the summary
+  // gets summarized again without the user sending anything.
+  listeners[0]({ sid: "ses_small", dInput: 250_000, dRead: 0, dWrite: 0 })
+  listeners[0]({ sid: "ses_small", dInput: 60_000, dRead: 10_000, dWrite: 0 }) // 70k
+  await new Promise((r) => setTimeout(r, 60))
+  check("a shrinking conversation cancels the armed compaction", compacted.length === 0)
+
+  listeners[0]({ sid: "ses_small", dInput: 160_000, dRead: 20_000, dWrite: 0 }) // 180k
+  await new Promise((r) => setTimeout(r, 60))
+  check("a conversation under the floor is not compacted", compacted.length === 0)
+
+  listeners[0]({ sid: "ses_small", dInput: 230_000, dRead: 20_000, dWrite: 0 }) // 250k
+  await new Promise((r) => setTimeout(r, 60))
+  check("a conversation over the floor is compacted", compacted[0] === "ses_small")
 }
 
 // --- generation cleanup: a reload takes back what the last one armed --------

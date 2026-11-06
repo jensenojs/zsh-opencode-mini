@@ -126,6 +126,16 @@ autoTitleIdleMinutes = 54
 # worked; the failed bytes stay in <dataDir>/ext-good/<name>.broken.
 # devPath = "~/Projects/wez-ai/zsh-opencode-mini"
 
+[idleCompact]
+# The mini keeps one session for weeks. Once it has been quiet this long, the
+# extension summarizes it so the next summon starts from the summary instead of
+# the whole finished task. Minutes.
+idleMinutes = 30
+# Conversations smaller than this are left alone: below it the compaction
+# request costs more (it reads the transcript once) than carrying the history.
+# Tokens, counted as the last request's input plus cache read and write.
+minContextTokens = 200000
+
 [recipes]
 # Declarative model calls fired from shell events, evaluated by the opencode
 # side. Each recipe is a named table; the name becomes the tool name

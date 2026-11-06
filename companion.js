@@ -667,7 +667,7 @@ const usageDeltaListeners = []
 // it. The extension declares the cleanup, the host runs it at the same seam it
 // drops listeners.
 const generationDisposers = []
-// sid -> {input, read, ts} cumulative at last event. Persisted to disk because
+// sid -> {input, read, write, ts} cumulative at last event. Persisted to disk because
 // mini embeds the server: every hide-and-relaunch is a fresh boot, and the
 // first turn after a relaunch is exactly the one that pays full price for a
 // directory switch — without a seeded baseline that bust is undetectable.
@@ -685,7 +685,7 @@ function persistUsageTotals() {
     }
     const out = {}
     for (const [sid, t] of usageTotals) {
-      out[sid] = { input: t.input, read: t.read, ts: t.ts }
+      out[sid] = { input: t.input, read: t.read, write: t.write, ts: t.ts }
     }
     const tmp = `${usageBaselineFile}.${process.pid}.tmp`
     writeFileSync(tmp, JSON.stringify(out))
@@ -714,7 +714,7 @@ export function seedUsageTotals(dataDir) {
     // holding a TTL that only one extension's use of the number depends on.
     for (const [sid, t] of Object.entries(seeded ?? {})) {
       if (typeof t?.input === "number") {
-        trackUsage(sid, { input: t.input, read: t.read ?? 0, ts: t.ts ?? 0 })
+        trackUsage(sid, { input: t.input, read: t.read ?? 0, write: t.write ?? 0, ts: t.ts ?? 0 })
       }
     }
   } catch {
@@ -766,13 +766,19 @@ function dispatchUsage(p) {
   const tokens = p?.tokens
   if (!sid || !tokens || typeof tokens.input !== "number") return
   const read = typeof tokens.cache?.read === "number" ? tokens.cache.read : 0
+  const write = typeof tokens.cache?.write === "number" ? tokens.cache.write : 0
   const last = usageTotals.get(sid)
-  trackUsage(sid, { input: tokens.input, read, ts: Date.now() })
+  trackUsage(sid, { input: tokens.input, read, write, ts: Date.now() })
   persistUsageTotals()
   if (!last) return // nothing to compare against: record and wait for the next delta
+  // A baseline written before `write` was tracked carries no value for it; the
+  // first delta would then count the whole cache write of one request as the
+  // request's size. Report 0 for that one delta instead — an underestimate
+  // costs a late compaction, an overestimate a pointless one.
+  const dWrite = typeof last.write === "number" ? write - last.write : 0
   // The delta carries the previous sample's timestamp; how long a gap makes the
   // comparison meaningless is a consumer's policy, not the host's.
-  const delta = { sid, dInput: tokens.input - last.input, dRead: read - last.read, lastTs: last.ts }
+  const delta = { sid, dInput: tokens.input - last.input, dRead: read - last.read, dWrite, lastTs: last.ts }
   for (const cb of usageDeltaListeners) {
     try {
       cb(delta)
