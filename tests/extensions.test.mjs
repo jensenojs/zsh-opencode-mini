@@ -517,6 +517,38 @@ function delta(ext, sid, dInput, dRead) {
   check("a conversation over the floor is compacted", compacted[0] === "ses_small")
 }
 
+// --- idle compaction: a working subagent keeps the parent awake ------------
+{
+  const { ctx } = makeCtx()
+  const compacted = []
+  const listeners = []
+  const sessions = {
+    // The parent has been quiet for a while: only the child is working.
+    ses_parent: { sessionID: "ses_parent", agent: "mini", time: { updated: Date.now() - 60_000 } },
+    ses_child: { sessionID: "ses_child", agent: "general", parentID: "ses_parent" },
+  }
+  const host = {
+    agent: "mini",
+    config: { idleCompact: { idleMinutes: 0.005 } }, // 300ms
+    report: () => {},
+    onUsageDelta: (cb) => listeners.push(cb),
+    compactionPrompt: () => {},
+    session: {
+      get: async (sessionID) => sessions[sessionID],
+      compact: async (sessionID) => compacted.push(sessionID),
+    },
+  }
+  await idleCompact.setup(ctx, host)
+
+  listeners[0]({ sid: "ses_parent", dInput: 300_000, dRead: 0, dWrite: 0 }) // arm 300ms
+  await new Promise((r) => setTimeout(r, 100))
+  listeners[0]({ sid: "ses_child", dInput: 5_000, dRead: 0, dWrite: 0 }) // still working
+  await new Promise((r) => setTimeout(r, 240)) // past the parent's own timer
+  check("a working subagent holds off the parent's compaction", compacted.length === 0)
+  await new Promise((r) => setTimeout(r, 250)) // past the window measured from the child
+  check("it compacts once the child has been quiet too", compacted[0] === "ses_parent")
+}
+
 // --- generation cleanup: a reload takes back what the last one armed --------
 {
   const cfgDir = mkdtempSync(join(tmpdir(), "zom-ext-dispose-"))

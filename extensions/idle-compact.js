@@ -69,6 +69,32 @@ export default {
     const muted = new Map()
     const firing = new Set()
     let reportedNoSize = false
+    // When each session last reported usage. A subagent runs as its own
+    // session, and nothing on the parent moves while it works — this map is the
+    // only place that activity is visible. Insertion order is recency.
+    const lastSeen = new Map()
+    const ACTIVITY_CAP = 64
+
+    const noteActivity = (sid) => {
+      lastSeen.delete(sid)
+      lastSeen.set(sid, Date.now())
+      while (lastSeen.size > ACTIVITY_CAP) lastSeen.delete(lastSeen.keys().next().value)
+    }
+
+    // The newest usage among the sessions that name `sid` as their parent.
+    // Sessions are asked for their own record: the alternative, remembering the
+    // parent at delta time, would put an async lookup in the hot path and trust
+    // a value a resumed session may have outgrown.
+    const newestChildActivity = async (sid) => {
+      const since = Date.now() - idleMs
+      let newest = 0
+      for (const [other, ts] of lastSeen) {
+        if (other === sid || ts < since) continue
+        const otherSession = await host.session.get(other)
+        if (otherSession?.parentID === sid && ts > newest) newest = ts
+      }
+      return newest
+    }
 
     const disarm = (sid) => {
       clearTimeout(timers.get(sid))
@@ -102,6 +128,14 @@ export default {
           arm(sid, idleMs - quiet)
           return
         }
+        // A child's work is the parent's work: nothing on the parent moves
+        // while a subagent runs, so its own clock reads idle. Measure the
+        // window from the newest child activity instead.
+        const childAt = await newestChildActivity(sid)
+        if (Date.now() - childAt < idleMs) {
+          arm(sid, idleMs - (Date.now() - childAt))
+          return
+        }
         if (Date.now() - (lastFire.get(sid) ?? 0) < DEDUPE_MS) return
         lastFire.set(sid, Date.now())
         muted.set(sid, Date.now() + QUIET_AFTER_COMPACT_MS)
@@ -122,6 +156,7 @@ export default {
 
     host.onUsageDelta(({ sid, dInput, dRead, dWrite }) => {
       if (!sid) return
+      noteActivity(sid)
       // One request's input is the conversation it carried: fresh tokens plus
       // the cache it read and wrote. The host reports them as deltas of the
       // session's cumulative counters.
