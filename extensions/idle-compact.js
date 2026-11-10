@@ -36,6 +36,14 @@ const activityAt = (session) => {
   return 0
 }
 
+// "Nothing to compact yet" is the server's verdict, not a failure: the history
+// outside the keep window is already gone. The SDK surfaces it as an error, so
+// match the message and the typed fields the wire may carry instead.
+const nothingToCompact = (e) =>
+  /nothing to compact/i.test(String(e?.message ?? "")) ||
+  e?.data?.type === "compaction.unavailable" ||
+  e?.error?.type === "compaction.unavailable"
+
 const INSTRUCTION = [
   "This conversation is being compacted for a terminal assistant that keeps one session for months.",
   "Keep only what is still true: standing preferences and constraints, decisions already made,",
@@ -67,6 +75,13 @@ export default {
     const timers = new Map()
     const lastFire = new Map()
     const muted = new Map()
+    // Size at which the server last said there was nothing to fold. Asking again
+    // at that size is asking the same question twice; the timer stays off until
+    // the conversation has grown past the point where the answer was no.
+    const refusedAt = new Map()
+    // The last size each session reported; the refusal floor is compared
+    // against it, and fire() needs it without a delta in hand.
+    const lastSize = new Map()
     const firing = new Set()
     let reportedNoSize = false
     // When each session last reported usage. A subagent runs as its own
@@ -137,9 +152,19 @@ export default {
           return
         }
         if (Date.now() - (lastFire.get(sid) ?? 0) < DEDUPE_MS) return
+        const size = lastSize.get(sid) ?? 0
         lastFire.set(sid, Date.now())
         muted.set(sid, Date.now() + QUIET_AFTER_COMPACT_MS)
-        await host.session.compact(sid)
+        try {
+          await host.session.compact(sid)
+          refusedAt.delete(sid)
+        } catch (e) {
+          if (!nothingToCompact(e)) throw e
+          // The fold found nothing to summarize. Record the size so the next
+          // window can tell "still nothing" from "grown since", and stay quiet:
+          // a no-op is not something the user has to hear about.
+          refusedAt.set(sid, size)
+        }
       } catch (e) {
         host.report?.(`compaction failed for ${sid}: ${e?.message ?? e}`)
       } finally {
@@ -171,11 +196,24 @@ export default {
         return
       }
       if ((muted.get(sid) ?? 0) > Date.now()) return
+      // Only a request that is not the fold itself describes what the
+      // conversation carries; the quiet window keeps the fold's own bill out.
+      lastSize.set(sid, size)
       // Nothing worth compacting: drop whatever timer the previous, larger
       // conversation armed.
       if (size < minContext) {
         disarm(sid)
         return
+      }
+      // Already asked at this size and the server had nothing to fold. Growth
+      // past that point is the only thing that makes the question new again.
+      const refused = refusedAt.get(sid)
+      if (refused !== undefined) {
+        if (size <= refused) {
+          disarm(sid)
+          return
+        }
+        refusedAt.delete(sid)
       }
       arm(sid, idleMs)
     })

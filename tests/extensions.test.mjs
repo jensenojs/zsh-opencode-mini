@@ -7,6 +7,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync, utimesSync, statSync, readdirSync, rmSync, copyFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { mock } from "node:test"
 import stateWatch from "../extensions/state-watch.js"
 import idleCompact from "../extensions/idle-compact.js"
 import sessionTitle from "../extensions/session-title.js"
@@ -515,6 +516,55 @@ function delta(ext, sid, dInput, dRead) {
   listeners[0]({ sid: "ses_small", dInput: 230_000, dRead: 20_000, dWrite: 0 }) // 250k
   await new Promise((r) => setTimeout(r, 60))
   check("a conversation over the floor is compacted", compacted[0] === "ses_small")
+}
+
+// --- idle compaction: a refusal is a verdict, not a retry ------------------
+{
+  const { ctx } = makeCtx()
+  const compacted = []
+  const reports = []
+  const listeners = []
+  const sessions = { ses_full: { sessionID: "ses_full", agent: "mini" } }
+  const host = {
+    agent: "mini",
+    config: { idleCompact: { idleMinutes: 30 } },
+    report: (msg) => reports.push(msg),
+    onUsageDelta: (cb) => listeners.push(cb),
+    compactionPrompt: () => {},
+    session: {
+      get: async (sessionID) => sessions[sessionID],
+      // The server's answer when the history outside the keep window is empty.
+      compact: async (sessionID) => {
+        compacted.push(sessionID)
+        throw new Error("Nothing to compact yet")
+      },
+    },
+  }
+  // The retry cadence is measured in minutes; the clock is the only way to see
+  // it without waiting. Date rides along so the idle recheck reads the same one.
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() })
+  try {
+    await idleCompact.setup(ctx, host)
+    listeners[0]({ sid: "ses_full", dInput: 250_000, dRead: 20_000, dWrite: 0 }) // 270k
+    mock.timers.tick(30 * 60_000)
+    await new Promise((r) => setImmediate(r))
+    check("the first idle window asks once", compacted.length === 1)
+    check("a refusal is not reported as a failure", reports.length === 0)
+
+    // Same size: the question already has an answer.
+    listeners[0]({ sid: "ses_full", dInput: 250_000, dRead: 20_000, dWrite: 0 })
+    mock.timers.tick(30 * 60_000)
+    await new Promise((r) => setImmediate(r))
+    check("a refusal is not retried at the same size", compacted.length === 1)
+
+    // Grown past the refusal: worth asking again.
+    listeners[0]({ sid: "ses_full", dInput: 400_000, dRead: 20_000, dWrite: 0 }) // 420k
+    mock.timers.tick(30 * 60_000)
+    await new Promise((r) => setImmediate(r))
+    check("growth past the refusal asks again", compacted.length === 2)
+  } finally {
+    mock.timers.reset()
+  }
 }
 
 // --- idle compaction: a working subagent keeps the parent awake ------------
