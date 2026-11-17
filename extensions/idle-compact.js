@@ -76,8 +76,8 @@ export default {
     const lastFire = new Map()
     const muted = new Map()
     // Size at which the server last said there was nothing to fold. Asking again
-    // at that size is asking the same question twice; the timer stays off until
-    // the conversation has grown past the point where the answer was no.
+    // before a whole window of new material has accumulated is asking a question
+    // whose answer cannot have changed; the timer stays off until it has.
     const refusedAt = new Map()
     // The last size each session reported; the refusal floor is compared
     // against it, and fire() needs it without a delta in hand.
@@ -205,11 +205,14 @@ export default {
         disarm(sid)
         return
       }
-      // Already asked at this size and the server had nothing to fold. Growth
-      // past that point is the only thing that makes the question new again.
+      // Already asked at this size and the server had nothing to fold. Only a
+      // whole window of new material makes the question new again: a refusal
+      // means every surviving range is protected, and any smaller growth is
+      // more of the same protected tail. Asking earlier would burn a visible
+      // compaction message on a refusal that is already known.
       const refused = refusedAt.get(sid)
       if (refused !== undefined) {
-        if (size <= refused) {
+        if (size <= refused + minContext) {
           disarm(sid)
           return
         }

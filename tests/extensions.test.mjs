@@ -557,11 +557,18 @@ function delta(ext, sid, dInput, dRead) {
     await new Promise((r) => setImmediate(r))
     check("a refusal is not retried at the same size", compacted.length === 1)
 
-    // Grown past the refusal: worth asking again.
+    // Grown, but by less than a whole window: the history is still the same
+    // protected tail the refusal already described.
     listeners[0]({ sid: "ses_full", dInput: 400_000, dRead: 20_000, dWrite: 0 }) // 420k
     mock.timers.tick(30 * 60_000)
     await new Promise((r) => setImmediate(r))
-    check("growth past the refusal asks again", compacted.length === 2)
+    check("growth under one window past the refusal does not ask", compacted.length === 1)
+
+    // Grown past the refusal by a whole window: worth asking again.
+    listeners[0]({ sid: "ses_full", dInput: 500_000, dRead: 20_000, dWrite: 0 }) // 520k
+    mock.timers.tick(30 * 60_000)
+    await new Promise((r) => setImmediate(r))
+    check("growth past the refusal by a window asks again", compacted.length === 2)
   } finally {
     mock.timers.reset()
   }
