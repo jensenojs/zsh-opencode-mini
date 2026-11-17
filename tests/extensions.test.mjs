@@ -847,13 +847,16 @@ function delta(ext, sid, dInput, dRead) {
 {
   const { default: diskWatch, shouldWarn } = await import("../extensions/disk-watch.js")
   const HOUR = 60 * 60 * 1000
-  check("disk-watch: below threshold never warns", shouldWarn(0.5, undefined, 1000) === false)
-  check("disk-watch: at threshold warns once", shouldWarn(0.9, undefined, 1000) === true)
-  check("disk-watch: inside cooldown stays quiet", shouldWarn(0.93, 1000, 1000 + 3 * HOUR) === false)
-  check("disk-watch: after cooldown reminds", shouldWarn(0.93, 1000, 1000 + 7 * HOUR) === true)
-  check("disk-watch: recovered disk re-arms silently", shouldWarn(0.8, 1000, 1000 + 7 * HOUR) === false)
+  const GB = 1024n ** 3n
+  check("disk-watch: above the floor never warns", shouldWarn(20n * GB, undefined, 1000) === false)
+  check("disk-watch: at the floor warns once", shouldWarn(9n * GB, undefined, 1000) === true)
+  check("disk-watch: inside cooldown stays quiet", shouldWarn(9n * GB, 1000, 1000 + 3 * HOUR) === false)
+  check("disk-watch: after cooldown reminds", shouldWarn(9n * GB, 1000, 1000 + 7 * HOUR) === true)
+  check("disk-watch: recovered disk re-arms silently", shouldWarn(30n * GB, 1000, 1000 + 7 * HOUR) === false)
 
-  const fullStatfs = () => ({ blocks: 1000n, bsize: 4096n, bavail: 50n })
+  // 95% used but bytes left above the floor: the percentage must not decide.
+  const bigButRoomy = () => ({ blocks: 120_633_179n, bsize: 4096n, bavail: 9_500_000n }) // ~39GB free
+  const fullStatfs = () => ({ blocks: 1000n, bsize: 4096n, bavail: 50n }) // ~0.2GB free
   const boot = (statfs) => {
     const c = makeCtx()
     const backend = new Map()
@@ -868,10 +871,15 @@ function delta(ext, sid, dInput, dRead) {
     return messages.map((m) => m.content.map((p) => p.text).join("")).join("\n")
   }
   {
+    const { c, h } = boot(bigButRoomy)
+    await diskWatch.setup(c.ctx, h)
+    check("disk-watch: a 95% full disk with 39GB free stays quiet", event(c) === "")
+  }
+  {
     const { c, h } = boot(fullStatfs)
     await diskWatch.setup(c.ctx, h)
     const first = event(c)
-    check("disk-watch: a full disk injects a warning", first.includes("zom-disk-watch") && first.includes("95%"))
+    check("disk-watch: a nearly full disk injects a factual notice", first.includes("zom-disk-watch") && first.includes("GB free") && !first.includes("failing"))
     const second = event(c)
     check("disk-watch: the next turn does not repeat it", second === "")
   }
@@ -884,7 +892,7 @@ function delta(ext, sid, dInput, dRead) {
     check("disk-watch: past cooldown it reminds", event(c).includes("zom-disk-watch"))
   }
   {
-    const { c, h } = boot(() => ({ blocks: 1000n, bsize: 4096n, bavail: 500n }))
+    const { c, h } = boot(() => ({ blocks: 8_000_000n, bsize: 4096n, bavail: 4_000_000n })) // 16GB of 32GB free
     await diskWatch.setup(c.ctx, h)
     check("disk-watch: a half-full disk stays quiet", event(c) === "")
   }
